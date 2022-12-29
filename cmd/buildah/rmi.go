@@ -15,60 +15,58 @@ import (
 	"github.com/containers/storage"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
+	"github.com/spf13/cobra"
 )
 
-var (
-	rmiDescription = "removes one or more locally stored images."
-	rmiFlags       = []cli.Flag{
-		cli.BoolFlag{
-			Name:  "all, a",
-			Usage: "remove all images",
-		},
-		cli.BoolFlag{
-			Name:  "prune, p",
-			Usage: "prune dangling images",
-		},
-		cli.BoolFlag{
-			Name:  "force, f",
-			Usage: "force removal of the image and any containers using the image",
-		},
-	}
-	rmiCommand = cli.Command{
-		Name:                   "rmi",
-		Usage:                  "removes one or more images from local storage",
-		Description:            rmiDescription,
-		Action:                 rmiCmd,
-		ArgsUsage:              "IMAGE-NAME-OR-ID [...]",
-		Flags:                  sortFlags(rmiFlags),
-		SkipArgReorder:         true,
-		UseShortOptionHandling: true,
-	}
-)
+type rmiResults struct {
+	all   bool
+	prune bool
+	force bool
+}
 
-func rmiCmd(c *cli.Context) error {
-	force := c.Bool("force")
-	removeAll := c.Bool("all")
-	pruneDangling := c.Bool("prune")
+func init() {
+	var (
+		rmiDescription = "\n  Removes one or more locally stored images."
+		opts           rmiResults
+	)
+	rmiCommand := &cobra.Command{
+		Use:   "rmi",
+		Short: "Remove one or more images from local storage",
+		Long:  rmiDescription,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return rmiCmd(cmd, args, opts)
+		},
+		Example: `buildah rmi imageID
+  buildah rmi --all --force
+  buildah rmi imageID1 imageID2 imageID3`,
+	}
+	rmiCommand.SetUsageTemplate(UsageTemplate())
 
-	args := c.Args()
-	if len(args) == 0 && !removeAll && !pruneDangling {
+	flags := rmiCommand.Flags()
+	flags.SetInterspersed(false)
+
+	flags.BoolVarP(&opts.all, "all", "a", false, "remove all images")
+	flags.BoolVarP(&opts.prune, "prune", "p", false, "prune dangling images")
+	flags.BoolVarP(&opts.force, "force", "f", false, "force removal of the image and any containers using the image")
+
+	rootCmd.AddCommand(rmiCommand)
+}
+
+func rmiCmd(c *cobra.Command, args []string, iopts rmiResults) error {
+	if len(args) == 0 && !iopts.all && !iopts.prune {
 		return errors.Errorf("image name or ID must be specified")
 	}
-	if len(args) > 0 && removeAll {
+	if len(args) > 0 && iopts.all {
 		return errors.Errorf("when using the --all switch, you may not pass any images names or IDs")
 	}
-	if removeAll && pruneDangling {
+	if iopts.all && iopts.prune {
 		return errors.Errorf("when using the --all switch, you may not use --prune switch")
 	}
-	if len(args) > 0 && pruneDangling {
+	if len(args) > 0 && iopts.prune {
 		return errors.Errorf("when using the --prune switch, you may not pass any images names or IDs")
 	}
 
 	if err := buildahcli.VerifyFlagsArgsOrder(args); err != nil {
-		return err
-	}
-	if err := parse.ValidateFlags(c, rmiFlags); err != nil {
 		return err
 	}
 
@@ -79,14 +77,14 @@ func rmiCmd(c *cli.Context) error {
 
 	imagesToDelete := args[:]
 
-	if removeAll {
+	if iopts.all {
 		imagesToDelete, err = findAllImages(store)
 		if err != nil {
 			return err
 		}
 	}
 
-	if pruneDangling {
+	if iopts.prune {
 		imagesToDelete, err = findDanglingImages(store)
 		if err != nil {
 			return err
@@ -99,13 +97,13 @@ func rmiCmd(c *cli.Context) error {
 		return errors.Wrapf(err, "error building system context")
 	}
 
-	return deleteImages(ctx, systemContext, store, imagesToDelete, removeAll, force)
+	return deleteImages(ctx, systemContext, store, imagesToDelete, iopts.all, iopts.force)
 }
 
 func deleteImages(ctx context.Context, systemContext *types.SystemContext, store storage.Store, imagesToDelete []string, removeAll, force bool) error {
 	var lastError error
 	for _, id := range imagesToDelete {
-		image, err := getImage(ctx, systemContext, id, store)
+		image, err := getImage(ctx, systemContext, store, id)
 		if err != nil || image == nil {
 			if lastError != nil {
 				fmt.Fprintln(os.Stderr, lastError)
@@ -117,7 +115,7 @@ func deleteImages(ctx context.Context, systemContext *types.SystemContext, store
 			continue
 		}
 		if image != nil {
-			ctrIDs, err := runningContainers(image, store)
+			ctrIDs, err := runningContainers(store, image)
 			if err != nil {
 				if lastError != nil {
 					fmt.Fprintln(os.Stderr, lastError)
@@ -157,7 +155,7 @@ func deleteImages(ctx context.Context, systemContext *types.SystemContext, store
 				// If it is forced, we have to untag the image so that it can be deleted
 				image.Names = image.Names[:0]
 			} else {
-				name, err2 := untagImage(id, image, store)
+				name, err2 := untagImage(id, store, image)
 				if err2 != nil {
 					if lastError != nil {
 						fmt.Fprintln(os.Stderr, lastError)
@@ -169,7 +167,7 @@ func deleteImages(ctx context.Context, systemContext *types.SystemContext, store
 
 				// Need to fetch the image state again after making changes to it i.e untag
 				// because only a copy of the image state is returned
-				image, err = getImage(ctx, systemContext, image.ID, store)
+				image, err = getImage(ctx, systemContext, store, image.ID)
 				if err != nil || image == nil {
 					if lastError != nil {
 						fmt.Fprintln(os.Stderr, lastError)
@@ -178,7 +176,7 @@ func deleteImages(ctx context.Context, systemContext *types.SystemContext, store
 				}
 			}
 
-			isParent, err := imageIsParent(store, image.TopLayer)
+			isParent, err := imageIsParent(ctx, systemContext, store, image)
 			if err != nil {
 				if lastError != nil {
 					fmt.Fprintln(os.Stderr, lastError)
@@ -199,7 +197,7 @@ func deleteImages(ctx context.Context, systemContext *types.SystemContext, store
 				lastError = errors.Errorf("unable to delete %q (cannot be forced) - image has dependent child images", image.ID)
 				continue
 			}
-			id, err := removeImage(image, store)
+			id, err := removeImage(ctx, systemContext, store, image)
 			if err != nil {
 				if lastError != nil {
 					fmt.Fprintln(os.Stderr, lastError)
@@ -214,7 +212,7 @@ func deleteImages(ctx context.Context, systemContext *types.SystemContext, store
 	return lastError
 }
 
-func getImage(ctx context.Context, systemContext *types.SystemContext, id string, store storage.Store) (*storage.Image, error) {
+func getImage(ctx context.Context, systemContext *types.SystemContext, store storage.Store, id string) (*storage.Image, error) {
 	var ref types.ImageReference
 	ref, err := properImageRef(ctx, id)
 	if err != nil {
@@ -240,7 +238,7 @@ func getImage(ctx context.Context, systemContext *types.SystemContext, id string
 	return nil, err
 }
 
-func untagImage(imgArg string, image *storage.Image, store storage.Store) (string, error) {
+func untagImage(imgArg string, store storage.Store, image *storage.Image) (string, error) {
 	newNames := []string{}
 	removedName := ""
 	for _, name := range image.Names {
@@ -258,8 +256,8 @@ func untagImage(imgArg string, image *storage.Image, store storage.Store) (strin
 	return removedName, nil
 }
 
-func removeImage(image *storage.Image, store storage.Store) (string, error) {
-	parent, err := getParent(store, image.TopLayer)
+func removeImage(ctx context.Context, systemContext *types.SystemContext, store storage.Store, image *storage.Image) (string, error) {
+	parent, err := getParent(ctx, systemContext, store, image)
 	if err != nil {
 		return "", err
 	}
@@ -267,17 +265,17 @@ func removeImage(image *storage.Image, store storage.Store) (string, error) {
 		return "", errors.Wrapf(err, "could not remove image %q", image.ID)
 	}
 	for parent != nil {
-		nextParent, err := getParent(store, parent.TopLayer)
+		nextParent, err := getParent(ctx, systemContext, store, parent)
 		if err != nil {
 			return image.ID, errors.Wrapf(err, "unable to get parent from image %q", image.ID)
 		}
-		children, err := getChildren(store, parent.TopLayer)
+		isParent, err := imageIsParent(ctx, systemContext, store, parent)
 		if err != nil {
-			return image.ID, errors.Wrapf(err, "unable to get children from image %q", image.ID)
+			return image.ID, errors.Wrapf(err, "unable to get check if image %q is a parent", image.ID)
 		}
 		// Do not remove if image is a base image and is not untagged, or if
 		// the image has more children.
-		if len(parent.Names) > 0 || len(children) > 0 {
+		if len(parent.Names) > 0 || isParent {
 			return image.ID, nil
 		}
 		id := parent.ID
@@ -292,7 +290,7 @@ func removeImage(image *storage.Image, store storage.Store) (string, error) {
 }
 
 // Returns a list of running containers associated with the given ImageReference
-func runningContainers(image *storage.Image, store storage.Store) ([]string, error) {
+func runningContainers(store storage.Store, image *storage.Image) ([]string, error) {
 	ctrIDs := []string{}
 	containers, err := store.Containers()
 	if err != nil {

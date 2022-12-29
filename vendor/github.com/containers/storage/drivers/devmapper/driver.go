@@ -1,4 +1,4 @@
-// +build linux
+// +build linux,cgo
 
 package devmapper
 
@@ -9,8 +9,6 @@ import (
 	"path"
 	"strconv"
 
-	"github.com/sirupsen/logrus"
-
 	"github.com/containers/storage/drivers"
 	"github.com/containers/storage/pkg/devicemapper"
 	"github.com/containers/storage/pkg/idtools"
@@ -18,6 +16,7 @@ import (
 	"github.com/containers/storage/pkg/mount"
 	"github.com/containers/storage/pkg/system"
 	units "github.com/docker/go-units"
+	"github.com/sirupsen/logrus"
 )
 
 func init() {
@@ -35,8 +34,8 @@ type Driver struct {
 }
 
 // Init creates a driver with the given home and the set of options.
-func Init(home string, options []string, uidMaps, gidMaps []idtools.IDMap) (graphdriver.Driver, error) {
-	deviceSet, err := NewDeviceSet(home, true, options, uidMaps, gidMaps)
+func Init(home string, options graphdriver.Options) (graphdriver.Driver, error) {
+	deviceSet, err := NewDeviceSet(home, true, options.DriverOptions, options.UIDMaps, options.GIDMaps)
 	if err != nil {
 		return nil, err
 	}
@@ -48,8 +47,8 @@ func Init(home string, options []string, uidMaps, gidMaps []idtools.IDMap) (grap
 	d := &Driver{
 		DeviceSet: deviceSet,
 		home:      home,
-		uidMaps:   uidMaps,
-		gidMaps:   gidMaps,
+		uidMaps:   options.UIDMaps,
+		gidMaps:   options.GIDMaps,
 		ctr:       graphdriver.NewRefCounter(graphdriver.NewDefaultChecker()),
 		locker:    locker.New(),
 	}
@@ -124,6 +123,11 @@ func (d *Driver) Cleanup() error {
 	return err
 }
 
+// CreateFromTemplate creates a layer with the same contents and parent as another layer.
+func (d *Driver) CreateFromTemplate(id, template string, templateIDMappings *idtools.IDMappings, parent string, parentIDMappings *idtools.IDMappings, opts *graphdriver.CreateOpts, readWrite bool) error {
+	return d.Create(id, template, opts)
+}
+
 // CreateReadWrite creates a layer that is writable for use as a container
 // file system.
 func (d *Driver) CreateReadWrite(id, parent string, opts *graphdriver.CreateOpts) error {
@@ -189,7 +193,7 @@ func (d *Driver) Get(id string, options graphdriver.MountOpts) (string, error) {
 	}
 
 	// Mount the device
-	if err := d.DeviceSet.MountDevice(id, mp, options.MountLabel); err != nil {
+	if err := d.DeviceSet.MountDevice(id, mp, options); err != nil {
 		d.ctr.Decrement(mp)
 		return "", err
 	}

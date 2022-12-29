@@ -74,11 +74,11 @@ __buildah_previous_extglob_setting=$(shopt -p extglob)
 shopt -s extglob
 
 __buildah_list_containers() {
-    COMPREPLY=($(compgen -W "$(buildah containers -q)" -- $cur))
+   COMPREPLY=($(compgen -W "$(buildah containers --format '{{.ContainerName}} {{.ContainerID}}' )" -- $cur))
 }
 
 __buildah_list_images() {
-    COMPREPLY=($(compgen -W "$(buildah images -q)" -- $cur))
+   COMPREPLY=($(compgen -W "$(buildah images --format '{{.ID}} {{.Name}}' )" -- $cur))
 }
 
 __buildah_pos_first_nonflag() {
@@ -258,6 +258,7 @@ return 1
 
  _buildah_config() {
      local boolean_options="
+     --add-history
      --help
      -h
   "
@@ -316,6 +317,7 @@ return 1
           --rm
           --squash
           --tls-verify
+          --omit-timestamp
   "
 
      local options_with_args="
@@ -325,7 +327,6 @@ return 1
           --format
           -f
           --iidfile
-          --signature-policy
   "
 
      local all_options="$options_with_args $boolean_options"
@@ -389,9 +390,13 @@ return 1
      --cpuset-cpus
      --cpuset-mems
      --creds
+     --dns-search
+     --dns
+     --dns-option
      -f
      --file
      --format
+     --http-proxy
      --iidfile
      --isolation
      --ipc
@@ -404,13 +409,14 @@ return 1
      --network
      --no-pivot
      --pid
+     --platform
      --runtime
      --runtime-flag
      --security-opt
      --shm-size
-     --signature-policy
      -t
      --tag
+     --target
      --ulimit
      --userns
      --userns-uid-map
@@ -446,6 +452,7 @@ return 1
 
  _buildah_run() {
      local boolean_options="
+     --add-history
      --help
      -t
      --tty
@@ -493,6 +500,7 @@ return 1
 
  _buildah_copy() {
      local boolean_options="
+     --add-history
      --help
      -h
      --quiet
@@ -514,6 +522,7 @@ return 1
 
  _buildah_add() {
      local boolean_options="
+     --add-history
      --help
      -h
      --quiet
@@ -559,6 +568,8 @@ return 1
 
  _buildah_pull() {
      local boolean_options="
+     --all-tags
+     -a
      --help
      -h
      --quiet
@@ -570,7 +581,6 @@ return 1
      --authfile
      --cert-dir
      --creds
-     --signature-policy
   "
 
      local all_options="$options_with_args $boolean_options"
@@ -599,7 +609,6 @@ return 1
           --creds
           --format
           -f
-          --signature-policy
   "
 
      local all_options="$options_with_args $boolean_options"
@@ -632,6 +641,54 @@ return 1
      esac
  }
 
+ _buildah_logout() {
+     local boolean_options="
+     --help
+     -h
+     --all
+     -a
+  "
+
+     local options_with_args="
+     --authfile
+  "
+
+     local all_options="$options_with_args $boolean_options"
+
+     case "$cur" in
+         -*)
+             COMPREPLY=($(compgen -W "$boolean_options $options_with_args" -- "$cur"))
+             ;;
+     esac
+ }
+
+ _buildah_login() {
+     local boolean_options="
+     --help
+     -h
+     --get-login
+     --tls-verify
+  "
+
+     local options_with_args="
+     --authfile
+     --cert-dir
+     --password string
+     -p
+     --password-stdin
+     --username
+     -u
+  "
+
+     local all_options="$options_with_args $boolean_options"
+
+     case "$cur" in
+         -*)
+             COMPREPLY=($(compgen -W "$boolean_options $options_with_args" -- "$cur"))
+             ;;
+     esac
+ }
+
  _buildah_mount() {
      local boolean_options="
      --help
@@ -651,7 +708,19 @@ return 1
      esac
  }
 
- _buildah_containers() {
+ _buildah_ps() {
+   _buildah_containers
+ }
+
+_buildah_list() {
+   _buildah_containers
+ }
+
+_buildah_ls() {
+   _buildah_containers
+ }
+
+_buildah_containers() {
      local boolean_options="
      --help
      -h
@@ -711,6 +780,22 @@ return 1
      esac
  }
 
+ _buildah_info() {
+     local options_with_args="
+       --debug
+       --D
+       --format
+     "
+
+     local all_options="$options_with_args"
+
+     case "$cur" in
+         -*)
+             COMPREPLY=($(compgen -W "$options_with_args" -- "$cur"))
+             ;;
+     esac
+}
+
  _buildah_inspect() {
      local options_with_args="
        --format
@@ -768,6 +853,7 @@ return 1
      --cpuset-cpus
      --cpuset-mems
      --creds
+     --http-proxy
      --ipc
      --isolation
      -m
@@ -777,7 +863,6 @@ return 1
      --net
      --network
      --pid
-     --signature-policy
      --security-opt
      --shm-size
      --ulimit
@@ -846,10 +931,14 @@ return 1
        delete
        from
        images
+       info
        inspect
+       list
+       ls
        mount
        pull
        push
+       ps
        rename
        rm
        rmi

@@ -9,13 +9,14 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"sync"
 
 	"github.com/containers/image/internal/tmpdir"
 	"github.com/containers/image/internal/iolimits"
 	"github.com/containers/image/manifest"
 	"github.com/containers/image/pkg/compression"
 	"github.com/containers/image/types"
-	"github.com/opencontainers/go-digest"
+	digest "github.com/opencontainers/go-digest"
 	"github.com/pkg/errors"
 )
 
@@ -30,7 +31,9 @@ type Source struct {
 	orderedDiffIDList []digest.Digest
 	knownLayers       map[digest.Digest]*layerInfo
 	// Other state
-	generatedManifest []byte // Private cache for GetManifest(), nil if not set yet.
+	generatedManifest []byte    // Private cache for GetManifest(), nil if not set yet.
+	cacheDataLock     sync.Once // Private state for ensureCachedDataIsPresent to make it concurrency-safe
+	cacheDataResult   error     // Private state for ensureCachedDataIsPresent
 }
 
 type layerInfo struct {
@@ -199,11 +202,17 @@ func (s *Source) readTarComponent(path string, limit int) ([]byte, error) {
 }
 
 // ensureCachedDataIsPresent loads data necessary for any of the public accessors.
+// It is safe to call this from multi-threaded code.
 func (s *Source) ensureCachedDataIsPresent() error {
-	if s.tarManifest != nil {
-		return nil
-	}
+	s.cacheDataLock.Do(func() {
+		s.cacheDataResult = s.ensureCachedDataIsPresentPrivate()
+	})
+	return s.cacheDataResult
+}
 
+// ensureCachedDataIsPresentPrivate is a private implementation detail of ensureCachedDataIsPresent.
+// Call ensureCachedDataIsPresent instead.
+func (s *Source) ensureCachedDataIsPresentPrivate() error {
 	// Read and parse manifest.json
 	tarManifest, err := s.loadTarManifest()
 	if err != nil {
@@ -397,8 +406,15 @@ func (r uncompressedReadCloser) Close() error {
 	return res
 }
 
+// HasThreadSafeGetBlob indicates whether GetBlob can be executed concurrently.
+func (s *Source) HasThreadSafeGetBlob() bool {
+	return true
+}
+
 // GetBlob returns a stream for the specified blob, and the blob’s size (or -1 if unknown).
-func (s *Source) GetBlob(ctx context.Context, info types.BlobInfo) (io.ReadCloser, int64, error) {
+// The Digest field in BlobInfo is guaranteed to be provided, Size may be -1 and MediaType may be optionally provided.
+// May update BlobInfoCache, preferably after it knows for certain that a blob truly exists at a specific location.
+func (s *Source) GetBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache) (io.ReadCloser, int64, error) {
 	if err := s.ensureCachedDataIsPresent(); err != nil {
 		return nil, 0, err
 	}

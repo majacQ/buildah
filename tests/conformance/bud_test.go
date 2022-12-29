@@ -161,16 +161,17 @@ var _ = Describe("Buildah build conformance test", func() {
 				//Check fs with container-diff
 				fscheck := SystemExec("container-diff", []string{"diff", "daemon://buildahimage", "daemon://dockerimage", "--type=file"})
 				fscheck.WaitWithDefaultTimeout()
-				fsr := regexp.MustCompile("These entries.*?None")
-				Expect(len(fsr.FindAllStringSubmatch(fscheck.OutputToString(), -1))).To(Equal(3),
+				fsr := regexp.MustCompile("/[a-zA-Z0-9/.\\-_]+[ ]+[0-9]+")
+				fsrignore := regexp.MustCompile("/[a-zA-Z0-9/.\\-_]+[ ]+0")
+				Expect(len(fsr.FindAllString(fscheck.OutputToString(),
+					-1))).To(Equal(len(fsrignore.FindAllString(fscheck.OutputToString(), -1))),
 					strings.Replace(errMsg, "FAILEDREASON", "Files inside image is different.", -1))
-
 			}
 
 		},
 		Entry("shell test", BuildTest{
 			Dockerfile:   "Dockerfile.shell",
-			BuildahRegex: "(?s)--> [0-9a-z]+(.*)--",
+			BuildahRegex: "(?s)[0-9a-z]+(.*)--",
 			DockerRegex:  "(?s)RUN env.*?Running in [0-9a-z]+(.*?)---",
 			IsFile:       true,
 			ExtraOptions: []string{"--no-cache"},

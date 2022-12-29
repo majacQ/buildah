@@ -2,6 +2,8 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"github.com/spf13/cobra"
 	"os"
 	"os/user"
 	"testing"
@@ -11,12 +13,11 @@ import (
 	"github.com/containers/image/types"
 	"github.com/containers/storage"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
 )
 
 var (
 	signaturePolicyPath = ""
-	storeOptions        = storage.DefaultStoreOptions
+	storeOptions, _     = storage.DefaultStoreOptions(false, 0)
 	testSystemContext   = types.SystemContext{}
 )
 
@@ -46,21 +47,28 @@ func TestMain(m *testing.M) {
 func TestGetStore(t *testing.T) {
 	// Make sure the tests are running as root
 	failTestIfNotRoot(t)
-
-	set := flag.NewFlagSet("test", 0)
-	globalSet := flag.NewFlagSet("test", 0)
-	globalSet.String("root", "", "path to the directory in which data, including images, is stored")
-	globalSet.String("runroot", "", "path to the directory in which state is stored")
-	globalSet.String("storage-driver", "", "storage driver")
-	globalCtx := cli.NewContext(nil, globalSet, nil)
-	globalCtx.GlobalSet("root", storeOptions.GraphRoot)
-	globalCtx.GlobalSet("runroot", storeOptions.RunRoot)
-	globalCtx.GlobalSet("storage-driver", storeOptions.GraphDriverName)
-	command := cli.Command{Name: "TestGetStore"}
-	c := cli.NewContext(nil, set, globalCtx)
-	c.Command = command
-
-	_, err := getStore(c)
+	testCmd := &cobra.Command{
+		Use: "test",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := getStore(cmd)
+			return err
+		},
+	}
+	flags := testCmd.PersistentFlags()
+	flags.String("root", storeOptions.GraphRoot, "")
+	flags.String("runroot", storeOptions.RunRoot, "")
+	flags.String("storage-driver", storeOptions.GraphDriverName, "")
+	flags.String("signature-policy", "", "")
+	if err := flags.MarkHidden("signature-policy"); err != nil {
+		panic(fmt.Sprintf("error marking signature-policy as hidden: %v", err))
+	}
+	// The following flags had to be added or we get panics in common.go when
+	// the lookups occur
+	flags.StringSlice("storage-opt", []string{}, "")
+	flags.String("registries-conf", "", "")
+	flags.String("userns-uid-map", "", "")
+	flags.String("userns-gid-map", "", "")
+	err := testCmd.Execute()
 	if err != nil {
 		t.Error(err)
 	}
@@ -88,7 +96,7 @@ func TestGetSize(t *testing.T) {
 		t.Fatalf("Error reading images: %v", err)
 	}
 
-	_, _, _, err = getDateAndDigestAndSize(getContext(), images[0], store)
+	_, _, _, err = getDateAndDigestAndSize(getContext(), store, images[0])
 	if err != nil {
 		t.Error(err)
 	}

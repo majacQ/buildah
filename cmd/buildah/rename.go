@@ -3,29 +3,29 @@ package main
 import (
 	"github.com/containers/buildah"
 	"github.com/pkg/errors"
-	"github.com/urfave/cli"
+	"github.com/spf13/cobra"
 )
 
 var (
-	renameDescription = "Rename a local container"
-	renameCommand     = cli.Command{
-		Name:                   "rename",
-		Usage:                  "Rename a container",
-		Description:            renameDescription,
-		Action:                 renameCmd,
-		ArgsUsage:              "CONTAINER-NAME-OR-ID CONTAINER-NAME",
-		SkipArgReorder:         true,
-		UseShortOptionHandling: true,
+	renameDescription = "\n  Renames a local container."
+	renameCommand     = &cobra.Command{
+		Use:   "rename",
+		Short: "Rename a container",
+		Long:  renameDescription,
+		RunE:  renameCmd,
+		Example: `buildah rename containerName NewName
+  buildah rename containerID NewName`,
+		Args: cobra.ExactArgs(2),
 	}
 )
 
-func renameCmd(c *cli.Context) error {
-	var builder *buildah.Builder
+func init() {
+	renameCommand.SetUsageTemplate(UsageTemplate())
+	rootCmd.AddCommand(renameCommand)
+}
 
-	args := c.Args()
-	if len(args) != 2 {
-		return errors.Errorf("container and it's new name must be specified'")
-	}
+func renameCmd(c *cobra.Command, args []string) error {
+	var builder *buildah.Builder
 
 	name := args[0]
 	newName := args[1]

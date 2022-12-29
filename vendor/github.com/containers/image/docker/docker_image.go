@@ -25,7 +25,7 @@ type Image struct {
 // a client to the registry hosting the given image.
 // The caller must call .Close() on the returned Image.
 func newImage(ctx context.Context, sys *types.SystemContext, ref dockerReference) (types.ImageCloser, error) {
-	s, err := newImageSource(sys, ref)
+	s, err := newImageSource(ctx, sys, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func GetRepositoryTags(ctx context.Context, sys *types.SystemContext, ref types.
 	tags := make([]string, 0)
 
 	for {
-		res, err := client.makeRequest(ctx, "GET", path, nil, nil, v2Auth)
+		res, err := client.makeRequest(ctx, "GET", path, nil, nil, v2Auth, nil)
 		if err != nil {
 			return nil, err
 		}

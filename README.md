@@ -35,18 +35,23 @@ For blogs, release announcements and more, please checkout the [buildah.io](http
 
 ## Buildah and Podman relationship
 
-Buildah and Podman are two complementary Open-source projects that are available on
-most Linux platforms and both projects reside at [GitHub.com](https://github.com)
-with Buildah [here](https://github.com/containers/buildah) and
-Podman [here](https://github.com/containers/libpod).  Both Buildah and Podman are
-command line tools that work on OCI images and containers.  The two projects
-differentiate in their specialization.
+Buildah and Podman are two complementary open-source projects that are
+available on most Linux platforms and both projects reside at
+[GitHub.com](https://github.com) with Buildah
+[here](https://github.com/containers/buildah) and Podman
+[here](https://github.com/containers/libpod).  Both, Buildah and Podman are
+command line tools that work on Open Container Initiative (OCI) images and
+containers.  The two projects differentiate in their specialization.
 
 Buildah specializes in building OCI images.  Buildah's commands replicate all
-of the commands that are found in a Dockerfile. Buildah’s goal is also to
-provide a lower level coreutils interface to build images, allowing people to build
-containers without requiring a Dockerfile.  The intent with Buildah is to allow other
-scripting languages to build container images, without requiring a daemon.
+of the commands that are found in a Dockerfile.  This allows building images
+with and without Dockerfiles while not requiring any root privileges.
+Buildah’s ultimate goal is to provide a lower-level coreutils interface to
+build images.  The flexibility of building images without Dockerfiles allows
+for the integration of other scripting languages into the build process.
+Buildah follows a simple fork-exec model and does not run as a daemon
+but it is based on a comprehensive API in golang, which can be vendored
+into other tools.
 
 Podman specializes in all of the commands and functions that help you to maintain and modify
 OCI images, such as pulling and tagging.  It also allows you to create, run, and maintain those containers
@@ -55,12 +60,12 @@ created from those images.
 A major difference between Podman and Buildah is their concept of a container.  Podman
 allows users to create "traditional containers" where the intent of these containers is
 to be long lived.  While Buildah containers are really just created to allow content
-to be added back to the container image.   An easy way to think of it is the
+to be added back to the container image.  An easy way to think of it is the
 `buildah run` command emulates the RUN command in a Dockerfile while the `podman run`
 command emulates the `docker run` command in functionality.  Because of this and their underlying
 storage differences, you can not see Podman containers from within Buildah or vice versa.
 
-In short Buildah is an efficient way to create OCI images  while Podman allows
+In short, Buildah is an efficient way to create OCI images while Podman allows
 you to manage and maintain those images and containers in a production environment using
 familiar container cli commands.  For more details, see the
 [Container Tools Guide](https://github.com/containers/buildah/tree/master/docs/containertools).
@@ -73,21 +78,21 @@ From [`./examples/lighttpd.sh`](examples/lighttpd.sh):
 $ cat > lighttpd.sh <<"EOF"
 #!/bin/bash -x
 
-ctr1=`buildah from ${1:-fedora}`
+ctr1=$(buildah from "${1:-fedora}")
 
 ## Get all updates and install our minimal httpd server
-buildah run $ctr1 -- dnf update -y
-buildah run $ctr1 -- dnf install -y lighttpd
+buildah run "$ctr1" -- dnf update -y
+buildah run "$ctr1" -- dnf install -y lighttpd
 
 ## Include some buildtime annotations
-buildah config --annotation "com.example.build.host=$(uname -n)" $ctr1
+buildah config --annotation "com.example.build.host=$(uname -n)" "$ctr1"
 
 ## Run our server and expose the port
-buildah config --cmd "/usr/sbin/lighttpd -D -f /etc/lighttpd/lighttpd.conf" $ctr1
-buildah config --port 80 $ctr1
+buildah config --cmd "/usr/sbin/lighttpd -D -f /etc/lighttpd/lighttpd.conf" "$ctr1"
+buildah config --port 80 "$ctr1"
 
 ## Commit this container to an image name
-buildah commit $ctr1 ${2:-$USER/lighttpd}
+buildah commit "$ctr1" "${2:-$USER/lighttpd}"
 EOF
 
 $ chmod +x lighttpd.sh
@@ -105,6 +110,7 @@ $ sudo ./lighttpd.sh
 | [buildah-copy(1)](/docs/buildah-copy.md)             | Copies the contents of a file, URL, or directory into a container's working directory.               |
 | [buildah-from(1)](/docs/buildah-from.md)             | Creates a new working container, either from scratch or using a specified image as a starting point. |
 | [buildah-images(1)](/docs/buildah-images.md)         | List images in local storage.                                                                        |
+| [buildah-info(1)](/docs/buildah-info.md)             | Display Buildah system information.                                                                  |
 | [buildah-inspect(1)](/docs/buildah-inspect.md)       | Inspects the configuration of a container or image.                                                  |
 | [buildah-mount(1)](/docs/buildah-mount.md)           | Mount the working container's root filesystem.                                                       |
 | [buildah-pull(1)](/docs/buildah-pull.md)             | Pull an image from the specified location.                                                           |

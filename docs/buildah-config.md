@@ -11,6 +11,17 @@ Updates one or more of the settings kept for a container.
 
 ## OPTIONS
 
+**--add-history**
+
+Add an entry to the image's history which will note changes to the settings for
+**--cmd**, **--entrypoint**, **--env**, **--healthcheck**, **--label**,
+**--onbuild**, **--port**, **--shell**, **--stop-signal**, **--user**,
+**--volume**, and **--workingdir**.
+Defaults to false.
+
+Note: You can also override the default value of --add-history by setting the
+BUILDAH\_HISTORY environment variable. `export BUILDAH_HISTORY=true`
+
 **--annotation** *annotation*
 
 Add an image *annotation* (e.g. annotation=*annotation*) to the image manifest
@@ -95,8 +106,12 @@ Note: this setting is not present in the OCIv1 image format, so it is discarded 
 
 **--healthcheck-start-period** *interval*
 
-Specify how long to wait after starting a container before running the command
-specified using the *--healthcheck* option.
+Specify how much time can elapse after a container has started before a failure
+to run the command specified using the *--healthcheck* option should be treated
+as an indication that the container is failing.  During this time period,
+failures will be attributed to the container not yet having fully started, and
+will not be counted as errors.  After the command succeeds, or the time period
+has elapsed, failures will be counted as errors.
 
 Note: this setting is not present in the OCIv1 image format, so it is discarded when writing images using OCIv1 formats.
 
@@ -180,7 +195,7 @@ buildah config --entrypoint /entrypoint.sh containerID
 
 buildah config --entrypoint '[ "/entrypoint.sh", "dev" ]' containerID
 
-buildah config --env foo=bar PATH=$PATH containerID
+buildah config --env foo=bar --env PATH=$PATH containerID
 
 buildah config --label Name=Mycontainer --label  Version=1.0 containerID
 

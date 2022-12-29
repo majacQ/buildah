@@ -18,7 +18,7 @@ import (
 	"unsafe"
 
 	"github.com/containers/buildah/bind"
-	"github.com/containers/buildah/unshare"
+	"github.com/containers/buildah/pkg/unshare"
 	"github.com/containers/buildah/util"
 	"github.com/containers/storage/pkg/ioutils"
 	"github.com/containers/storage/pkg/mount"
@@ -84,9 +84,18 @@ type runUsingChrootExecSubprocOptions struct {
 // RunUsingChroot runs a chrooted process, using some of the settings from the
 // passed-in spec, and using the specified bundlePath to hold temporary files,
 // directories, and mountpoints.
-func RunUsingChroot(spec *specs.Spec, bundlePath string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
+func RunUsingChroot(spec *specs.Spec, bundlePath, homeDir string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	var confwg sync.WaitGroup
-
+	var homeFound bool
+	for _, env := range spec.Process.Env {
+		if strings.HasPrefix(env, "HOME=") {
+			homeFound = true
+			break
+		}
+	}
+	if !homeFound {
+		spec.Process.Env = append(spec.Process.Env, fmt.Sprintf("HOME=%s", homeDir))
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -211,7 +220,6 @@ func runUsingChrootMain() {
 	var stdout io.Writer
 	var stderr io.Writer
 	fdDesc := make(map[int]string)
-	deferred := func() {}
 	if options.Spec.Process.Terminal {
 		// Create a pseudo-terminal -- open a copy of the master side.
 		ptyMasterFd, err := unix.Open("/dev/ptmx", os.O_RDWR, 0600)
@@ -351,21 +359,6 @@ func runUsingChrootMain() {
 		defer stdoutRead.Close()
 		defer stderrRead.Close()
 	}
-	// A helper that returns false if err is an error that would cause us
-	// to give up.
-	logIfNotRetryable := func(err error, what string) (retry bool) {
-		if err == nil {
-			return true
-		}
-		if errno, isErrno := err.(syscall.Errno); isErrno {
-			switch errno {
-			case syscall.EINTR, syscall.EAGAIN:
-				return true
-			}
-		}
-		logrus.Error(what)
-		return false
-	}
 	for readFd, writeFd := range relays {
 		if err := unix.SetNonblock(readFd, true); err != nil {
 			logrus.Errorf("error setting descriptor %d (%s) non-blocking: %v", readFd, fdDesc[readFd], err)
@@ -376,19 +369,23 @@ func runUsingChrootMain() {
 			return
 		}
 	}
+	if err := unix.SetNonblock(relays[unix.Stdin], true); err != nil {
+		logrus.Errorf("error setting %d to nonblocking: %v", relays[unix.Stdin], err)
+	}
 	go func() {
 		buffers := make(map[int]*bytes.Buffer)
 		for _, writeFd := range relays {
 			buffers[writeFd] = new(bytes.Buffer)
 		}
 		pollTimeout := -1
+		stdinClose := false
 		for len(relays) > 0 {
 			fds := make([]unix.PollFd, 0, len(relays))
 			for fd := range relays {
 				fds = append(fds, unix.PollFd{Fd: int32(fd), Events: unix.POLLIN | unix.POLLHUP})
 			}
 			_, err := unix.Poll(fds, pollTimeout)
-			if !logIfNotRetryable(err, fmt.Sprintf("poll: %v", err)) {
+			if !util.LogIfNotRetryable(err, fmt.Sprintf("poll: %v", err)) {
 				return
 			}
 			removeFds := make(map[int]struct{})
@@ -401,11 +398,14 @@ func runUsingChrootMain() {
 					removeFds[int(rfd.Fd)] = struct{}{}
 				}
 				if rfd.Revents&unix.POLLIN == 0 {
+					if stdinClose && stdinCopy == nil {
+						continue
+					}
 					continue
 				}
 				b := make([]byte, 8192)
 				nread, err := unix.Read(int(rfd.Fd), b)
-				logIfNotRetryable(err, fmt.Sprintf("read %s: %v", fdDesc[int(rfd.Fd)], err))
+				util.LogIfNotRetryable(err, fmt.Sprintf("read %s: %v", fdDesc[int(rfd.Fd)], err))
 				if nread > 0 {
 					if wfd, ok := relays[int(rfd.Fd)]; ok {
 						nwritten, err := buffers[wfd].Write(b[:nread])
@@ -422,7 +422,7 @@ func runUsingChrootMain() {
 					// from this descriptor, read as much as there is to read.
 					for rfd.Revents&unix.POLLHUP == unix.POLLHUP {
 						nr, err := unix.Read(int(rfd.Fd), b)
-						logIfNotRetryable(err, fmt.Sprintf("read %s: %v", fdDesc[int(rfd.Fd)], err))
+						util.LogIfUnexpectedWhileDraining(err, fmt.Sprintf("read %s: %v", fdDesc[int(rfd.Fd)], err))
 						if nr <= 0 {
 							break
 						}
@@ -447,7 +447,7 @@ func runUsingChrootMain() {
 			for wfd, buffer := range buffers {
 				if buffer.Len() > 0 {
 					nwritten, err := unix.Write(wfd, buffer.Bytes())
-					logIfNotRetryable(err, fmt.Sprintf("write %s: %v", fdDesc[wfd], err))
+					util.LogIfNotRetryable(err, fmt.Sprintf("write %s: %v", fdDesc[wfd], err))
 					if nwritten >= 0 {
 						_ = buffer.Next(nwritten)
 					}
@@ -455,8 +455,19 @@ func runUsingChrootMain() {
 				if buffer.Len() > 0 {
 					pollTimeout = 100
 				}
+				if wfd == relays[unix.Stdin] && stdinClose && buffer.Len() == 0 {
+					stdinCopy.Close()
+					delete(relays, unix.Stdin)
+				}
 			}
 			for rfd := range removeFds {
+				if rfd == unix.Stdin {
+					buffer, found := buffers[relays[unix.Stdin]]
+					if found && buffer.Len() > 0 {
+						stdinClose = true
+						continue
+					}
+				}
 				if !options.Spec.Process.Terminal && rfd == unix.Stdin {
 					stdinCopy.Close()
 				}
@@ -467,7 +478,6 @@ func runUsingChrootMain() {
 
 	// Set up mounts and namespaces, and run the parent subprocess.
 	status, err := runUsingChroot(options.Spec, options.BundlePath, ctty, stdin, stdout, stderr, closeOnceRunning)
-	deferred()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error running subprocess: %v\n", err)
 		os.Exit(1)
@@ -527,7 +537,7 @@ func runUsingChroot(spec *specs.Spec, bundlePath string, ctty *os.File, stdin io
 	logNamespaceDiagnostics(spec)
 
 	// If we have configured ID mappings, set them here so that they can apply to the child.
-	hostUidmap, hostGidmap, err := util.GetHostIDMappings("")
+	hostUidmap, hostGidmap, err := unshare.GetHostIDMappings("")
 	if err != nil {
 		return 1, err
 	}
@@ -1086,7 +1096,7 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 			}
 		}
 		// Skip anything that isn't a bind or tmpfs mount.
-		if m.Type != "bind" && m.Type != "tmpfs" {
+		if m.Type != "bind" && m.Type != "tmpfs" && m.Type != "overlay" {
 			logrus.Debugf("skipping mount of type %q on %q", m.Type, m.Destination)
 			continue
 		}
@@ -1098,10 +1108,12 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 			if err != nil {
 				return undoBinds, errors.Wrapf(err, "error examining %q for mounting in mount namespace", m.Source)
 			}
+		case "overlay":
+			fallthrough
 		case "tmpfs":
 			srcinfo, err = os.Stat("/")
 			if err != nil {
-				return undoBinds, errors.Wrapf(err, "error examining / to use as a template for a tmpfs")
+				return undoBinds, errors.Wrapf(err, "error examining / to use as a template for a %s", m.Type)
 			}
 		}
 		target := filepath.Join(spec.Root.Path, m.Destination)
@@ -1160,6 +1172,12 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 				return undoBinds, errors.Wrapf(err, "error mounting tmpfs to %q in mount namespace (%q, %q)", m.Destination, target, strings.Join(m.Options, ","))
 			}
 			logrus.Debugf("mounted a tmpfs to %q", target)
+		case "overlay":
+			// Mount a overlay.
+			if err := mount.Mount(m.Source, target, m.Type, strings.Join(append(m.Options, "private"), ",")); err != nil {
+				return undoBinds, errors.Wrapf(err, "error mounting overlay to %q in mount namespace (%q, %q)", m.Destination, target, strings.Join(m.Options, ","))
+			}
+			logrus.Debugf("mounted a overlay to %q", target)
 		}
 		if err = unix.Statfs(target, &fs); err != nil {
 			return undoBinds, errors.Wrapf(err, "error checking if directory %q was bound read-only", target)

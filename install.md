@@ -2,6 +2,76 @@
 
 # Installation Instructions
 
+## Installing packaged versions of buildah
+
+### [Arch Linux](https://www.archlinux.org)
+
+```bash
+sudo pacman -S buildah
+```
+
+### [Fedora](https://www.fedoraproject.org), [CentOS](https://www.centos.org)
+
+```bash
+sudo yum -y install buildah
+```
+
+### [Fedora SilverBlue](https://silverblue.fedoraproject.org)
+
+Installed by default
+
+### [Fedora CoreOS](https://coreos.fedoraproject.org)
+
+Not Available.  Must be installed via package layering.
+
+rpm-ostree install buildah
+
+Note: `[podman](https://podman.io) build` is available by default.
+
+### [Gentoo](https://www.gentoo.org)
+
+```bash
+sudo emerge app-emulation/libpod
+```
+
+### [openSUSE](https://www.opensuse.org)
+
+```bash
+sudo zypper install buildah
+```
+
+### [openSUSE Kubic](https://kubic.opensuse.org)
+
+transactional-update pkg in buildah
+
+### [RHEL7](https://www.redhat.com/en/technologies/linux-platforms/enterprise-linux)
+
+Subscribe, then enable Extras channel and install buildah.
+
+```bash
+sudo subscription-manager repos --enable=rhel-7-server-extras-rpms
+sudo yum -y install buildah
+```
+
+### [RHEL8 Beta](https://www.redhat.com/en/blog/powering-its-future-while-preserving-present-introducing-red-hat-enterprise-linux-8-beta?intcmp=701f2000001Cz6OAAS)
+
+```bash
+sudo yum module enable -y container-tools:1.0
+sudo yum module install -y buildah
+```
+
+### [Ubuntu](https://www.ubuntu.com)
+
+```bash
+sudo apt-get update -qq
+sudo apt-get install -qq -y software-properties-common
+sudo add-apt-repository -y ppa:projectatomic/ppa
+sudo apt-get update -qq
+sudo apt-get -qq -y install buildah
+```
+
+# Building from scratch
+
 ## System Requirements
 
 ### Kernel Version Requirements
@@ -202,9 +272,25 @@ apt -y install bats btrfs-tools git libapparmor-dev libdevmapper-dev libglib2.0-
 
 The build steps on Debian are otherwise the same as Ubuntu, above.
 
+## Vendoring - Dependency Management
+
+This project is using [vndr](https://github.com/LK4D4/vndr) for managing dependencies, which is a tedious and error-prone task. Doing it manually is likely to cause inconsistencies between the `./vendor` directory (i.e., the downloaded dependencies), the source code that imports those dependencies and the `vendor.conf` configuration file that describes which packages in which version (e.g., a release or git commit) are a dependency.
+
+To ease updating dependencies, we provide the `make vendor` target, which fetches all dependencies mentioned in `vendor.conf`.  `make vendor` whitelists certain packages to prevent the `vndr` tool from removing packages that the test suite (see `./test`) imports.
+
+The CI of this project makes sure that each pull request leaves a clean vendor state behind by first running the aforementioned `make vendor` followed by running `./hack/tree_status.sh` which checks if any file in the git tree has changed.
+
+### Vendor Troubleshooting
+
+If the CI is complaining about a pull request leaving behind an unclean state, it is very likely right about it. Make sure to run `make vendor` and add all the changes to the commit. Also make sure that your local git tree does not include files not under version control that may reference other go packages. If some dependencies are removed but they should not, for instance, because the CI is needing them, then whitelist those dependencies in the `make vendor` target of the Makefile.  Whitelisting a package will instruct `vndr` to not remove if during its cleanup phase.
+sd
+
 ## Configuration files
 
-### [registries.conf](https://src.fedoraproject.org/rpms/skopeo/blob/master/f/registries.conf)
+The following configuration files are required in order for Buildah to run appropriately.  The
+majority of these files are commonly contained in the `containers-common` package.
+
+### [registries.conf](https://github.com/containers/buildah/blob/master/docs/samples/registries.conf)
 
 #### Man Page: [registries.conf.5](https://github.com/containers/image/blob/master/docs/containers-registries.conf.5.md)
 
@@ -247,7 +333,7 @@ registries = []
 
 `/usr/share/containers/mounts.conf` and optionally `/etc/containers/mounts.conf`
 
-The mounts.conf files specify volume mount directories that are automatically mounted inside containers when executing the `buildah run` or `buildah build-using-dockerfile` commands.  Container process can then use this content.  The volume mount content does not get committed to the final image.
+The mounts.conf files specify volume mount directories that are automatically mounted inside containers when executing the `buildah run` or `buildah build-using-dockerfile` commands.  Container process can then use this content.  The volume mount content does not get committed to the final image.  This file is usually provided by the containers-common package.
 
 Usually these directories are used for passing secrets or credentials required by the package software to access remote package repositories.
 

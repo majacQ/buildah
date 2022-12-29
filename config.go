@@ -3,7 +3,6 @@ package buildah
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -269,21 +268,11 @@ func (b *Builder) Env() []string {
 // built using an image built from this container.
 func (b *Builder) SetEnv(k string, v string) {
 	reset := func(s *[]string) {
-		getenv := func(name string) string {
-			for i := range *s {
-				val := strings.SplitN((*s)[i], "=", 2)
-				if len(val) == 2 && val[0] == name {
-					return val[1]
-				}
-			}
-			return name
-		}
 		n := []string{}
 		for i := range *s {
 			if !strings.HasPrefix((*s)[i], k+"=") {
 				n = append(n, (*s)[i])
 			}
-			v = os.Expand(v, getenv)
 		}
 		n = append(n, k+"="+v)
 		*s = n
@@ -474,9 +463,6 @@ func (b *Builder) Hostname() string {
 // Note: this setting is not present in the OCIv1 image format, so it is
 // discarded when writing images using OCIv1 formats.
 func (b *Builder) SetHostname(name string) {
-	if name != "" && b.Format != Dockerv2ImageManifest {
-		logrus.Errorf("HOSTNAME is not supported for OCI image format, hostname %s will be ignored. Must use `docker` format", name)
-	}
 	b.Docker.Config.Hostname = name
 }
 
@@ -576,4 +562,51 @@ func (b *Builder) SetHealthcheck(config *docker.HealthConfig) {
 			Retries:     config.Retries,
 		}
 	}
+}
+
+// AddPrependedEmptyLayer adds an item to the history that we'll create when
+// commiting the image, after any history we inherit from the base image, but
+// before the history item that we'll use to describe the new layer that we're
+// adding.
+func (b *Builder) AddPrependedEmptyLayer(created *time.Time, createdBy, author, comment string) {
+	if created != nil {
+		copiedTimestamp := *created
+		created = &copiedTimestamp
+	}
+	b.PrependedEmptyLayers = append(b.PrependedEmptyLayers, ociv1.History{
+		Created:    created,
+		CreatedBy:  createdBy,
+		Author:     author,
+		Comment:    comment,
+		EmptyLayer: true,
+	})
+}
+
+// ClearPrependedEmptyLayers clears the list of history entries that we'll add
+// to the committed image before the entry for the layer that we're adding.
+func (b *Builder) ClearPrependedEmptyLayers() {
+	b.PrependedEmptyLayers = nil
+}
+
+// AddAppendedEmptyLayer adds an item to the history that we'll create when
+// commiting the image, after the history item that we'll use to describe the
+// new layer that we're adding.
+func (b *Builder) AddAppendedEmptyLayer(created *time.Time, createdBy, author, comment string) {
+	if created != nil {
+		copiedTimestamp := *created
+		created = &copiedTimestamp
+	}
+	b.AppendedEmptyLayers = append(b.AppendedEmptyLayers, ociv1.History{
+		Created:    created,
+		CreatedBy:  createdBy,
+		Author:     author,
+		Comment:    comment,
+		EmptyLayer: true,
+	})
+}
+
+// ClearAppendedEmptyLayers clears the list of history entries that we'll add
+// to the committed image after the entry for the layer that we're adding.
+func (b *Builder) ClearAppendedEmptyLayers() {
+	b.AppendedEmptyLayers = nil
 }

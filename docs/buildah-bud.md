@@ -40,7 +40,7 @@ Note: this information is not present in Docker image formats, so it is discarde
 
 **--authfile** *path*
 
-Path of the authentication file. Default is ${XDG\_RUNTIME\_DIR}/containers/auth.json, which is set using `podman login`.
+Path of the authentication file. Default is ${XDG\_RUNTIME\_DIR}/containers/auth.json, which is set using `buildah login`.
 If the authorization state is not found there, $HOME/.docker/config.json is checked, which is set using `docker login`.
 
 **--build-arg** *arg=value*
@@ -170,11 +170,36 @@ The [username[:password]] to use to authenticate with the registry if required.
 If one or both values are not supplied, a command line prompt will appear and the
 value can be entered.  The password is entered without echo.
 
+**--disable-compression, -D**
+
+Don't compress filesystem layers when building the image unless it is required
+by the location where the image is being written.  This is the default setting,
+because image layers are compressed automatically when they are pushed to
+registries, and images being written to local storage would only need to be
+decompressed again to be stored.  Compression can be forced in all cases by
+specifying **--disable-compression=false**.
+
 **--disable-content-trust**
 
 This is a Docker specific option to disable image verification to a Docker
 registry and is not supported by Buildah.  This flag is a NOOP and provided
 soley for scripting compatibility.
+
+**--dns**=[]
+
+Set custom DNS servers
+
+This option can be used to override the DNS configuration passed to the container. Typically this is necessary when the host DNS configuration is invalid for the container (e.g., 127.0.0.1). When this is the case the `--dns` flag is necessary for every run.
+
+The special value **none** can be specified to disable creation of /etc/resolv.conf in the container by Buildah. The /etc/resolv.conf file in the image will be used without changes.
+
+**--dns-option**=[]
+
+Set custom DNS options
+
+**--dns-search**=[]
+
+Set custom DNS search domains
 
 **--file, -f** *Dockerfile*
 
@@ -190,7 +215,7 @@ If you specify `-f -`, the Dockerfile contents will be read from stdin.
 
 **--force-rm** *bool-value*
 
-Always remove intermediate containers after a build, even if the build is unsuccessful..
+Always remove intermediate containers after a build, even if the build fails (default false).
 
 **--format**
 
@@ -200,6 +225,16 @@ Recognized formats include *oci* (OCI image-spec v1.0, the default) and
 
 Note: You can also override the default format by setting the BUILDAH\_FORMAT
 environment variable.  `export BUILDAH_FORMAT=docker`
+
+**--http-proxy**
+
+By default proxy environment variables are passed into the container if set
+for the buildah process.  This can be disabled by setting the `--http-proxy`
+option to `false`.  The environment variables passed in include `http_proxy`,
+`https_proxy`, `ftp_proxy`, `no_proxy`, and also the upper case versions of
+those.
+
+Defaults to `true`
 
 **--iidfile** *ImageIDfile*
 
@@ -294,15 +329,29 @@ that the PID namespace in which `buildah` itself is being run should be reused,
 or it can be the path to a PID namespace which is already in use by another
 process.
 
+**--platform**="Linux"
+
+This option has no effect on the build. Other container engines use this option
+to control the execution platform for the build (e.g., Windows, Linux) which is
+not required for Buildah as it supports only Linux.
+
 **--pull**
 
-Pull the image if it is not present.  If this flag is disabled (with
-*--pull=false*) and the image is not present, the image will not be pulled.
+When the flag is enabled, attempt to pull the latest image from the registries
+listed in registries.conf if a local image does not exist or the image is newer
+than the one in storage. Raise an error if the image is not in any listed
+registry and is not present locally.
+
+If the flag is disabled (with *--pull=false*), do not pull the image from the
+registry, use only the local version. Raise an error if the image is not
+present locally.
+
 Defaults to *true*.
 
 **--pull-always**
 
-Pull the image even if a version of the image is already present.
+Pull the image from the first registry it is found in as listed in registries.conf.
+Raise an error if not found in the registries, even if the image is present locally.
 
 **--quiet, -q**
 
@@ -354,12 +403,6 @@ Size of `/dev/shm`. The format is `<number><unit>`. `number` must be greater tha
 Unit is optional and can be `b` (bytes), `k` (kilobytes), `m`(megabytes), or `g` (gigabytes).
 If you omit the unit, the system uses bytes. If you omit the size entirely, the system uses `64m`.
 
-**--signature-policy** *signaturepolicy*
-
-Pathname of a signature policy file to use.  It is not recommended that this
-option be used, as the default behavior of using the system-wide default policy
-(frequently */etc/containers/policy.json*) is most often preferred.
-
 **--squash**
 
 Squash all of the new image's layers (including those inherited from a base image) into a single new layer.
@@ -369,6 +412,12 @@ Squash all of the new image's layers (including those inherited from a base imag
 Specifies the name which will be assigned to the resulting image if the build
 process completes successfully.
 If _imageName_ does not include a registry name, the registry name *localhost* will be prepended to the image name.
+
+**--target** *stageName*
+
+Set the target build stage to build.  When building a Dockerfile with multiple build stages, --target
+can be used to specify an intermediate build stage by name as the final stage for the resulting image.
+Commands after the target stage will be skipped.
 
 **--tls-verify** *bool-value*
 
@@ -486,7 +535,7 @@ process.
    container. The `OPTIONS` are a comma delimited list and can be:
 
    * [rw|ro]
-   * [z|Z]
+   * [z|Z|O]
    * [`[r]shared`|`[r]slave`|`[r]private`]
 
 The `CONTAINER-DIR` must be an absolute path such as `/src/docs`. The `HOST-DIR`
@@ -502,6 +551,8 @@ You can add the `:ro` or `:rw` suffix to a volume to mount it read-only or
 read-write mode, respectively. By default, the volumes are mounted read-write.
 See examples.
 
+  `Labeling Volume Mounts`
+
 Labeling systems like SELinux require that proper labels are placed on volume
 content mounted into a container. Without a label, the security system might
 prevent the processes running inside the container from using the content. By
@@ -514,6 +565,21 @@ share the volume content. As a result, Buildah labels the content with a shared
 content label. Shared volume labels allow all containers to read/write content.
 The `Z` option tells Buildah to label the content with a private unshared label.
 Only the current container can use a private volume.
+
+  `Overlay Volume Mounts`
+
+   The `:O` flag tells Buildah to mount the directory from the host as a temporary storage using the Overlay file system. The `RUN` command containers are allowed to modify contents within the mountpoint and are stored in the container storage in a separate directory.  In Ovelay FS terms the source directory will be the lower, and the container storage directory will be the upper. Modifications to the mount point are destroyed when the `RUN` command finishes executing, similar to a tmpfs mount point.
+
+  Any subsequent execution of `RUN` commands sees the original source directory content, any changes from previous RUN commands no longer exists.
+
+  One use case of the `overlay` mount is sharing the package cache from the host into the container to allow speeding up builds.
+
+  Note:
+
+     - Overlay mounts are not currently supported in rootless mode.
+     - The `O` flag is not allowed to be specified with the `Z` or `z` flags. Content mounted into the container is labeled with the private label.
+       On SELinux systems, labels in the source directory needs to be readable by the container label. If not, SELinux container separation must be disabled for the container to work.
+     - Modification of the directory volume mounted into the container with an overlay mount can cause unexpected failures.  It is recommended that you do not modify the directory until the container finishes running.
 
 By default bind mounted volumes are `private`. That means any mounts done
 inside container will not be visible on the host and vice versa. This behavior can
@@ -576,6 +642,8 @@ buildah bud --security-opt label=level:s0:c100,c200 --cgroup-parent /path/to/cgr
 
 buildah bud --volume /home/test:/myvol:ro,Z -t imageName .
 
+buildah bud -v /var/lib/dnf:/var/lib/dnf:O -t imageName .
+
 buildah bud --layers -t imageName .
 
 buildah bud --no-cache -t imageName .
@@ -583,6 +651,8 @@ buildah bud --no-cache -t imageName .
 buildah bud --layers --force-rm -t imageName .
 
 buildah bud --no-cache --rm=false -t imageName .
+
+buildah bud --dns-search=example.com --dns=223.5.5.5 --dns-option=use-vc .
 
 ### Building an image using a URL
 
@@ -605,5 +675,9 @@ buildah bud --no-cache --rm=false -t imageName .
 
 registries.conf is the configuration file which specifies which container registries should be consulted when completing image names which do not include a registry or domain portion.
 
+**policy.json** (`/etc/containers/policy.json`)
+
+Signature policy file.  This defines the trust policy for container images.  Controls which container registries can be used for image, and whether or not the tool should trust the images.
+
 ## SEE ALSO
-buildah(1), CPP(1), podman-login(1), docker-login(1), namespaces(7), pid\_namespaces(7), policy.json(5), registries.conf(5), user\_namespaces(7)
+buildah(1), CPP(1), buildah-login(1), docker-login(1), namespaces(7), pid\_namespaces(7), policy.json(5), registries.conf(5), user\_namespaces(7)

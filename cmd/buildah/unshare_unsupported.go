@@ -3,18 +3,16 @@
 package main
 
 import (
-	"github.com/urfave/cli"
+	"github.com/spf13/cobra"
 )
 
-var (
-	unshareCommand = cli.Command{
-		Name:           "unshare",
-		Hidden:         true,
-		Action:         func(c *cli.Context) error { return nil },
-		SkipArgReorder: true,
+func init() {
+	unshareCommand := cobra.Command{
+		Use:    "unshare",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return nil
+		},
 	}
-)
-
-func maybeReexecUsingUserNamespace(c *cli.Context, evenForRoot bool) {
-	return
+	rootCmd.AddCommand(&unshareCommand)
 }

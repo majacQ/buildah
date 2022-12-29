@@ -17,7 +17,6 @@ The Buildah package provides a command line tool which can be used to:
     * Delete a working container or an image.
     * Rename a local container.
 
-This tool needs to be run as the root user.
 
 ## OPTIONS
 
@@ -104,8 +103,12 @@ Print the version
 | buildah-copy(1)       | Copies the contents of a file, URL, or directory into a container's working directory.               |
 | buildah-from(1)       | Creates a new working container, either from scratch or using a specified image as a starting point. |
 | buildah-images(1)     | List images in local storage.                                                                        |
+| buildah-info(1)       | Display Buildah system information.                                                                  |
 | buildah-inspect(1)    | Inspects the configuration of a container or image                                                   |
 | buildah-mount(1)      | Mount the working container's root filesystem.                                                       |
+| buildah-login(1)      | Login to a container registry.                                                                       |
+| buildah-logout(1)     | Logout of a container registry                                                                       |
+| buildah-pull(1)       | Pull an image from the specified location.                                                           |
 | buildah-push(1)       | Push an image from local storage to elsewhere.                                                       |
 | buildah-rename(1)     | Rename a local container.                                                                            |
 | buildah-rm(1)         | Removes one or more working containers.                                                              |
@@ -122,26 +125,30 @@ Print the version
 
 **storage.conf** (`/etc/containers/storage.conf`)
 
-	storage.conf is the storage configuration file for all tools using containers/storage
+storage.conf is the storage configuration file for all tools using containers/storage
 
-	The storage configuration file specifies all of the available container storage options for tools using shared container storage.
+The storage configuration file specifies all of the available container storage options for tools using shared container storage.
 
 **mounts.conf** (`/usr/share/containers/mounts.conf` and optionally `/etc/containers/mounts.conf`)
 
-    The mounts.conf files specify volume mount directories that are automatically mounted inside containers when executing the `buildah run` or `buildah build-using-dockerfile` commands.  Container process can then use this content.  The volume mount content does not get committed to the final image.
+The mounts.conf files specify volume mount directories that are automatically mounted inside containers when executing the `buildah run` or `buildah build-using-dockerfile` commands.  Container process can then use this content.  The volume mount content does not get committed to the final image.
 
-    Usually these directories are used for passing secrets or credentials required by the package software to access remote package repositories.
+Usually these directories are used for passing secrets or credentials required by the package software to access remote package repositories.
 
-    For example, a mounts.conf with the line "`/usr/share/rhel/secrets:/run/secrets`", the content of `/usr/share/rhel/secrets` directory is mounted on `/run/secrets` inside the container.  This mountpoint allows Red Hat Enterprise Linux subscriptions from the host to be used within the container.
+For example, a mounts.conf with the line "`/usr/share/rhel/secrets:/run/secrets`", the content of `/usr/share/rhel/secrets` directory is mounted on `/run/secrets` inside the container.  This mountpoint allows Red Hat Enterprise Linux subscriptions from the host to be used within the container.
 
-    Note this is not a volume mount. The content of the volumes is copied into container storage, not bind mounted directly from the host.
+Note this is not a volume mount. The content of the volumes is copied into container storage, not bind mounted directly from the host.
 
 **registries.conf** (`/etc/containers/registries.conf`)
 
-	registries.conf is the configuration file which specifies which container registries should be consulted when completing image names which do not include a registry or domain portion.
+registries.conf is the configuration file which specifies which container registries should be consulted when completing image names which do not include a registry or domain portion.
+
+**registries.d** (`/etc/containers/registries.d`)
+
+Directory which contains configuration snippets which specify registries which should be consulted when completing image names which do not include a registry or domain portion.
 
 ## SEE ALSO
-podman(1), mounts.conf(5), newuidmap(1), newgidmap(1), registries.conf(5), storage.conf(5)
+podman(1), containers-mounts.conf(5), newuidmap(1), newgidmap(1), containers-registries.conf(5), containers-storage.conf(5)
 
 ## HISTORY
 December 2017, Originally compiled by Tom Sweeney <tsweeney@redhat.com>

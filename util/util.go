@@ -1,28 +1,23 @@
 package util
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"path"
-	"strconv"
 	"strings"
+	"syscall"
 
-	"github.com/containers/image/directory"
-	dockerarchive "github.com/containers/image/docker/archive"
 	"github.com/containers/image/docker/reference"
-	ociarchive "github.com/containers/image/oci/archive"
 	"github.com/containers/image/pkg/sysregistriesv2"
 	"github.com/containers/image/signature"
 	is "github.com/containers/image/storage"
-	"github.com/containers/image/tarball"
+	"github.com/containers/image/transports"
 	"github.com/containers/image/types"
 	"github.com/containers/storage"
-	"github.com/containers/storage/pkg/idtools"
 	"github.com/docker/distribution/registry/api/errcode"
-	"github.com/opencontainers/runtime-spec/specs-go"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -42,36 +37,24 @@ var (
 		"index.docker.io": "library",
 		"docker.io":       "library",
 	}
-	// Transports contains the possible transports used for images
-	Transports = map[string]string{
-		dockerarchive.Transport.Name(): "",
-		ociarchive.Transport.Name():    "",
-		directory.Transport.Name():     "",
-		tarball.Transport.Name():       "",
-	}
-	// DockerArchive is the transport we prepend to an image name
-	// when saving to docker-archive
-	DockerArchive = dockerarchive.Transport.Name()
-	// OCIArchive is the transport we prepend to an image name
-	// when saving to oci-archive
-	OCIArchive = ociarchive.Transport.Name()
-	// DirTransport is the transport for pushing and pulling
-	// images to and from a directory
-	DirTransport = directory.Transport.Name()
-	// TarballTransport is the transport for importing a tar archive
-	// and creating a filesystem image
-	TarballTransport = tarball.Transport.Name()
 )
 
 // ResolveName checks if name is a valid image name, and if that name doesn't
 // include a domain portion, returns a list of the names which it might
-// correspond to in the set of configured registries,
-// and a boolean which is true iff 1) the list of search registries was used, and 2) it was empty.
+// correspond to in the set of configured registries, the transport used to
+// pull the image, and a boolean which is true iff
+// 1) the list of search registries was used, and 2) it was empty.
+//
+// The returned image names never include a transport: prefix, and if transport != "",
+// (transport, image) should be a valid input to alltransports.ParseImageName.
+// transport == "" indicates that image that already exists in a local storage,
+// and the name is valid for store.Image() / storage.Transport.ParseStoreReference().
+//
 // NOTE: The "list of search registries is empty" check does not count blocked registries,
 // and neither the implied "localhost" nor a possible firstRegistry are counted
-func ResolveName(name string, firstRegistry string, sc *types.SystemContext, store storage.Store) ([]string, bool, error) {
+func ResolveName(name string, firstRegistry string, sc *types.SystemContext, store storage.Store) ([]string, string, bool, error) {
 	if name == "" {
-		return nil, false, nil
+		return nil, "", false, nil
 	}
 
 	// Maybe it's a truncated image ID.  Don't prepend a registry name, then.
@@ -79,27 +62,28 @@ func ResolveName(name string, firstRegistry string, sc *types.SystemContext, sto
 		if img, err := store.Image(name); err == nil && img != nil && strings.HasPrefix(img.ID, name) {
 			// It's a truncated version of the ID of an image that's present in local storage;
 			// we need only expand the ID.
-			return []string{img.ID}, false, nil
+			return []string{img.ID}, "", false, nil
 		}
 	}
 
 	// If the image includes a transport's name as a prefix, use it as-is.
+	if strings.HasPrefix(name, DefaultTransport) {
+		return []string{strings.TrimPrefix(name, DefaultTransport)}, DefaultTransport, false, nil
+	}
 	split := strings.SplitN(name, ":", 2)
 	if len(split) == 2 {
-		if _, ok := Transports[split[0]]; ok {
-			return []string{split[1]}, false, nil
+		if trans := transports.Get(split[0]); trans != nil {
+			return []string{split[1]}, trans.Name(), false, nil
 		}
 	}
-
-	name = strings.TrimPrefix(name, DefaultTransport)
 	// If the image name already included a domain component, we're done.
 	named, err := reference.ParseNormalizedNamed(name)
 	if err != nil {
-		return nil, false, errors.Wrapf(err, "error parsing image name %q", name)
+		return nil, "", false, errors.Wrapf(err, "error parsing image name %q", name)
 	}
 	if named.String() == name {
 		// Parsing produced the same result, so there was a domain name in there to begin with.
-		return []string{name}, false, nil
+		return []string{name}, DefaultTransport, false, nil
 	}
 	if reference.Domain(named) != "" && RegistryDefaultPathPrefix[reference.Domain(named)] != "" {
 		// If this domain can cause us to insert something in the middle, check if that happened.
@@ -116,20 +100,25 @@ func ResolveName(name string, firstRegistry string, sc *types.SystemContext, sto
 		defaultPrefix := RegistryDefaultPathPrefix[reference.Domain(named)] + "/"
 		if strings.HasPrefix(repoPath, defaultPrefix) && path.Join(domain, repoPath[len(defaultPrefix):])+tag+digest == name {
 			// Yup, parsing just inserted a bit in the middle, so there was a domain name there to begin with.
-			return []string{name}, false, nil
+			return []string{name}, DefaultTransport, false, nil
 		}
 	}
 
 	// Figure out the list of registries.
 	var registries []string
-	allRegistries, err := sysregistriesv2.GetRegistries(sc)
+	searchRegistries, err := sysregistriesv2.UnqualifiedSearchRegistries(sc)
 	if err != nil {
 		logrus.Debugf("unable to read configured registries to complete %q: %v", name, err)
-		registries = []string{}
+		searchRegistries = nil
 	}
-	for _, registry := range sysregistriesv2.FindUnqualifiedSearchRegistries(allRegistries) {
-		if !registry.Blocked {
-			registries = append(registries, registry.URL)
+	for _, registry := range searchRegistries {
+		reg, err := sysregistriesv2.FindRegistry(sc, registry)
+		if err != nil {
+			logrus.Debugf("unable to read registry configuraitno for %#v: %v", registry, err)
+			continue
+		}
+		if reg == nil || !reg.Blocked {
+			registries = append(registries, registry)
 		}
 	}
 	searchRegistriesAreEmpty := len(registries) == 0
@@ -153,7 +142,7 @@ func ResolveName(name string, firstRegistry string, sc *types.SystemContext, sto
 		candidate := path.Join(registry, middle, name)
 		candidates = append(candidates, candidate)
 	}
-	return candidates, searchRegistriesAreEmpty, nil
+	return candidates, DefaultTransport, searchRegistriesAreEmpty, nil
 }
 
 // ExpandNames takes unqualified names, parses them as image names, and returns
@@ -164,7 +153,7 @@ func ExpandNames(names []string, firstRegistry string, systemContext *types.Syst
 	expanded := make([]string, 0, len(names))
 	for _, n := range names {
 		var name reference.Named
-		nameList, _, err := ResolveName(n, firstRegistry, systemContext, store)
+		nameList, _, _, err := ResolveName(n, firstRegistry, systemContext, store)
 		if err != nil {
 			return nil, errors.Wrapf(err, "error parsing name %q", n)
 		}
@@ -182,15 +171,7 @@ func ExpandNames(names []string, firstRegistry string, systemContext *types.Syst
 			name = named
 		}
 		name = reference.TagNameOnly(name)
-		tag := ""
-		digest := ""
-		if tagged, ok := name.(reference.NamedTagged); ok {
-			tag = ":" + tagged.Tag()
-		}
-		if digested, ok := name.(reference.Digested); ok {
-			digest = "@" + digested.Digest().String()
-		}
-		expanded = append(expanded, name.Name()+tag+digest)
+		expanded = append(expanded, name.String())
 	}
 	return expanded, nil
 }
@@ -200,7 +181,7 @@ func FindImage(store storage.Store, firstRegistry string, systemContext *types.S
 	var ref types.ImageReference
 	var img *storage.Image
 	var err error
-	names, _, err := ResolveName(image, firstRegistry, systemContext, store)
+	names, _, _, err := ResolveName(image, firstRegistry, systemContext, store)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "error parsing name %q", image)
 	}
@@ -222,7 +203,7 @@ func FindImage(store storage.Store, firstRegistry string, systemContext *types.S
 		break
 	}
 	if ref == nil || img == nil {
-		return nil, nil, errors.Wrapf(err, "error locating image with name %q", image)
+		return nil, nil, errors.Wrapf(err, "error locating image with name %q (%v)", image, names)
 	}
 	return ref, img, nil
 }
@@ -282,6 +263,36 @@ func StringInSlice(s string, slice []string) bool {
 	return false
 }
 
+// GetContainerIDs uses ID mappings to compute the container-level IDs that will
+// correspond to a UID/GID pair on the host.
+func GetContainerIDs(uidmap, gidmap []specs.LinuxIDMapping, uid, gid uint32) (uint32, uint32, error) {
+	uidMapped := true
+	for _, m := range uidmap {
+		uidMapped = false
+		if uid >= m.HostID && uid < m.HostID+m.Size {
+			uid = (uid - m.HostID) + m.ContainerID
+			uidMapped = true
+			break
+		}
+	}
+	if !uidMapped {
+		return 0, 0, errors.Errorf("container uses ID mappings (%#v), but doesn't map UID %d", uidmap, uid)
+	}
+	gidMapped := true
+	for _, m := range gidmap {
+		gidMapped = false
+		if gid >= m.HostID && gid < m.HostID+m.Size {
+			gid = (gid - m.HostID) + m.ContainerID
+			gidMapped = true
+			break
+		}
+	}
+	if !gidMapped {
+		return 0, 0, errors.Errorf("container uses ID mappings (%#v), but doesn't map GID %d", gidmap, gid)
+	}
+	return uid, gid, nil
+}
+
 // GetHostIDs uses ID mappings to compute the host-level IDs that will
 // correspond to a UID/GID pair in the container.
 func GetHostIDs(uidmap, gidmap []specs.LinuxIDMapping, uid, gid uint32) (uint32, uint32, error) {
@@ -295,7 +306,7 @@ func GetHostIDs(uidmap, gidmap []specs.LinuxIDMapping, uid, gid uint32) (uint32,
 		}
 	}
 	if !uidMapped {
-		return 0, 0, errors.Errorf("container uses ID mappings, but doesn't map UID %d", uid)
+		return 0, 0, errors.Errorf("container uses ID mappings (%#v), but doesn't map UID %d", uidmap, uid)
 	}
 	gidMapped := true
 	for _, m := range gidmap {
@@ -307,7 +318,7 @@ func GetHostIDs(uidmap, gidmap []specs.LinuxIDMapping, uid, gid uint32) (uint32,
 		}
 	}
 	if !gidMapped {
-		return 0, 0, errors.Errorf("container uses ID mappings, but doesn't map GID %d", gid)
+		return 0, 0, errors.Errorf("container uses ID mappings (%#v), but doesn't map GID %d", gidmap, gid)
 	}
 	return uid, gid, nil
 }
@@ -319,138 +330,6 @@ func GetHostRootIDs(spec *specs.Spec) (uint32, uint32, error) {
 		return 0, 0, nil
 	}
 	return GetHostIDs(spec.Linux.UIDMappings, spec.Linux.GIDMappings, 0, 0)
-}
-
-// getHostIDMappings reads mappings from the named node under /proc.
-func getHostIDMappings(path string) ([]specs.LinuxIDMapping, error) {
-	var mappings []specs.LinuxIDMapping
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, errors.Wrapf(err, "error reading ID mappings from %q", path)
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		fields := strings.Fields(line)
-		if len(fields) != 3 {
-			return nil, errors.Errorf("line %q from %q has %d fields, not 3", line, path, len(fields))
-		}
-		cid, err := strconv.ParseUint(fields[0], 10, 32)
-		if err != nil {
-			return nil, errors.Wrapf(err, "error parsing container ID value %q from line %q in %q", fields[0], line, path)
-		}
-		hid, err := strconv.ParseUint(fields[1], 10, 32)
-		if err != nil {
-			return nil, errors.Wrapf(err, "error parsing host ID value %q from line %q in %q", fields[1], line, path)
-		}
-		size, err := strconv.ParseUint(fields[2], 10, 32)
-		if err != nil {
-			return nil, errors.Wrapf(err, "error parsing size value %q from line %q in %q", fields[2], line, path)
-		}
-		mappings = append(mappings, specs.LinuxIDMapping{ContainerID: uint32(cid), HostID: uint32(hid), Size: uint32(size)})
-	}
-	return mappings, nil
-}
-
-// GetHostIDMappings reads mappings for the specified process (or the current
-// process if pid is "self" or an empty string) from the kernel.
-func GetHostIDMappings(pid string) ([]specs.LinuxIDMapping, []specs.LinuxIDMapping, error) {
-	if pid == "" {
-		pid = "self"
-	}
-	uidmap, err := getHostIDMappings(fmt.Sprintf("/proc/%s/uid_map", pid))
-	if err != nil {
-		return nil, nil, err
-	}
-	gidmap, err := getHostIDMappings(fmt.Sprintf("/proc/%s/gid_map", pid))
-	if err != nil {
-		return nil, nil, err
-	}
-	return uidmap, gidmap, nil
-}
-
-// GetSubIDMappings reads mappings from /etc/subuid and /etc/subgid.
-func GetSubIDMappings(user, group string) ([]specs.LinuxIDMapping, []specs.LinuxIDMapping, error) {
-	mappings, err := idtools.NewIDMappings(user, group)
-	if err != nil {
-		return nil, nil, errors.Wrapf(err, "error reading subuid mappings for user %q and subgid mappings for group %q", user, group)
-	}
-	var uidmap, gidmap []specs.LinuxIDMapping
-	for _, m := range mappings.UIDs() {
-		uidmap = append(uidmap, specs.LinuxIDMapping{
-			ContainerID: uint32(m.ContainerID),
-			HostID:      uint32(m.HostID),
-			Size:        uint32(m.Size),
-		})
-	}
-	for _, m := range mappings.GIDs() {
-		gidmap = append(gidmap, specs.LinuxIDMapping{
-			ContainerID: uint32(m.ContainerID),
-			HostID:      uint32(m.HostID),
-			Size:        uint32(m.Size),
-		})
-	}
-	return uidmap, gidmap, nil
-}
-
-// ParseIDMappings parses mapping triples.
-func ParseIDMappings(uidmap, gidmap []string) ([]idtools.IDMap, []idtools.IDMap, error) {
-	nonDigitsToWhitespace := func(r rune) rune {
-		if strings.IndexRune("0123456789", r) == -1 {
-			return ' '
-		} else {
-			return r
-		}
-	}
-	parseTriple := func(spec []string) (container, host, size uint32, err error) {
-		cid, err := strconv.ParseUint(spec[0], 10, 32)
-		if err != nil {
-			return 0, 0, 0, fmt.Errorf("error parsing id map value %q: %v", spec[0], err)
-		}
-		hid, err := strconv.ParseUint(spec[1], 10, 32)
-		if err != nil {
-			return 0, 0, 0, fmt.Errorf("error parsing id map value %q: %v", spec[1], err)
-		}
-		sz, err := strconv.ParseUint(spec[2], 10, 32)
-		if err != nil {
-			return 0, 0, 0, fmt.Errorf("error parsing id map value %q: %v", spec[2], err)
-		}
-		return uint32(cid), uint32(hid), uint32(sz), nil
-	}
-	parseIDMap := func(mapSpec []string, mapSetting string) (idmap []idtools.IDMap, err error) {
-		for _, idMapSpec := range mapSpec {
-			idSpec := strings.Fields(strings.Map(nonDigitsToWhitespace, idMapSpec))
-			if len(idSpec)%3 != 0 {
-				return nil, errors.Errorf("error initializing ID mappings: %s setting is malformed", mapSetting)
-			}
-			for i := range idSpec {
-				if i%3 != 0 {
-					continue
-				}
-				cid, hid, size, err := parseTriple(idSpec[i : i+3])
-				if err != nil {
-					return nil, errors.Errorf("error initializing ID mappings: %s setting is malformed", mapSetting)
-				}
-				mapping := idtools.IDMap{
-					ContainerID: int(cid),
-					HostID:      int(hid),
-					Size:        int(size),
-				}
-				idmap = append(idmap, mapping)
-			}
-		}
-		return idmap, nil
-	}
-	uid, err := parseIDMap(uidmap, "userns-uid-map")
-	if err != nil {
-		return nil, nil, err
-	}
-	gid, err := parseIDMap(gidmap, "userns-gid-map")
-	if err != nil {
-		return nil, nil, err
-	}
-	return uid, gid, nil
 }
 
 // GetPolicyContext sets up, initializes and returns a new context for the specified policy
@@ -465,4 +344,33 @@ func GetPolicyContext(ctx *types.SystemContext) (*signature.PolicyContext, error
 		return nil, err
 	}
 	return policyContext, nil
+}
+
+// logIfNotErrno logs the error message unless err is either nil or one of the
+// listed syscall.Errno values.  It returns true if it logged an error.
+func logIfNotErrno(err error, what string, ignores ...syscall.Errno) (logged bool) {
+	if err == nil {
+		return false
+	}
+	if errno, isErrno := err.(syscall.Errno); isErrno {
+		for _, ignore := range ignores {
+			if errno == ignore {
+				return false
+			}
+		}
+	}
+	logrus.Error(what)
+	return true
+}
+
+// LogIfNotRetryable logs "what" if err is set and is not an EINTR or EAGAIN
+// syscall.Errno.  Returns "true" if we can continue.
+func LogIfNotRetryable(err error, what string) (retry bool) {
+	return !logIfNotErrno(err, what, syscall.EINTR, syscall.EAGAIN)
+}
+
+// LogIfUnexpectedWhileDraining logs "what" if err is set and is not an EINTR
+// or EAGAIN or EIO syscall.Errno.
+func LogIfUnexpectedWhileDraining(err error, what string) {
+	logIfNotErrno(err, what, syscall.EINTR, syscall.EAGAIN, syscall.EIO)
 }

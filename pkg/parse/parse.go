@@ -9,22 +9,20 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/containers/buildah"
+	"github.com/containers/buildah/pkg/unshare"
 	"github.com/containers/image/types"
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/docker/go-units"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
+	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh/terminal"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -35,61 +33,94 @@ const (
 )
 
 // CommonBuildOptions parses the build options from the bud cli
-func CommonBuildOptions(c *cli.Context) (*buildah.CommonBuildOptions, error) {
+func CommonBuildOptions(c *cobra.Command) (*buildah.CommonBuildOptions, error) {
 	var (
 		memoryLimit int64
 		memorySwap  int64
+		noDNS       bool
 		err         error
 	)
-	rlim := unix.Rlimit{Cur: 1048576, Max: 1048576}
-	defaultLimits := []string{}
-	if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &rlim); err == nil {
-		defaultLimits = append(defaultLimits, fmt.Sprintf("nofile=%d:%d", rlim.Cur, rlim.Max))
-	}
-	if err := unix.Setrlimit(unix.RLIMIT_NPROC, &rlim); err == nil {
-		defaultLimits = append(defaultLimits, fmt.Sprintf("nproc=%d:%d", rlim.Cur, rlim.Max))
-	}
-	if c.String("memory") != "" {
-		memoryLimit, err = units.RAMInBytes(c.String("memory"))
+
+	defaultLimits := getDefaultProcessLimits()
+
+	memVal, _ := c.Flags().GetString("memory")
+	if memVal != "" {
+		memoryLimit, err = units.RAMInBytes(memVal)
 		if err != nil {
 			return nil, errors.Wrapf(err, "invalid value for memory")
 		}
 	}
-	if c.String("memory-swap") != "" {
-		memorySwap, err = units.RAMInBytes(c.String("memory-swap"))
+
+	memSwapValue, _ := c.Flags().GetString("memory-swap")
+	if memSwapValue != "" {
+		memorySwap, err = units.RAMInBytes(memSwapValue)
 		if err != nil {
 			return nil, errors.Wrapf(err, "invalid value for memory-swap")
 		}
 	}
-	if len(c.StringSlice("add-host")) > 0 {
-		for _, host := range c.StringSlice("add-host") {
+
+	addHost, _ := c.Flags().GetStringSlice("add-host")
+	if len(addHost) > 0 {
+		for _, host := range addHost {
 			if err := validateExtraHost(host); err != nil {
 				return nil, errors.Wrapf(err, "invalid value for add-host")
 			}
 		}
 	}
-	if _, err := units.FromHumanSize(c.String("shm-size")); err != nil {
-		return nil, errors.Wrapf(err, "invalid --shm-size")
+
+	noDNS = false
+	dnsServers, _ := c.Flags().GetStringSlice("dns")
+	for _, server := range dnsServers {
+		if strings.ToLower(server) == "none" {
+			noDNS = true
+		}
 	}
-	if err := ParseVolumes(c.StringSlice("volume")); err != nil {
-		return nil, err
+	if noDNS && len(dnsServers) > 1 {
+		return nil, errors.Errorf("invalid --dns, --dns=none may not be used with any other --dns options")
 	}
 
+	dnsSearch, _ := c.Flags().GetStringSlice("dns-search")
+	if noDNS && len(dnsSearch) > 0 {
+		return nil, errors.Errorf("invalid --dns-search, --dns-search may not be used with --dns=none")
+	}
+
+	dnsOptions, _ := c.Flags().GetStringSlice("dns-option")
+	if noDNS && len(dnsOptions) > 0 {
+		return nil, errors.Errorf("invalid --dns-option, --dns-option may not be used with --dns=none")
+	}
+
+	if _, err := units.FromHumanSize(c.Flag("shm-size").Value.String()); err != nil {
+		return nil, errors.Wrapf(err, "invalid --shm-size")
+	}
+	volumes, _ := c.Flags().GetStringSlice("volume")
+	if err := ParseVolumes(volumes); err != nil {
+		return nil, err
+	}
+	cpuPeriod, _ := c.Flags().GetUint64("cpu-period")
+	cpuQuota, _ := c.Flags().GetInt64("cpu-quota")
+	cpuShares, _ := c.Flags().GetUint64("cpu-shares")
+	httpProxy, _ := c.Flags().GetBool("http-proxy")
+	ulimit, _ := c.Flags().GetStringSlice("ulimit")
 	commonOpts := &buildah.CommonBuildOptions{
-		AddHost:      c.StringSlice("add-host"),
-		CgroupParent: c.String("cgroup-parent"),
-		CPUPeriod:    c.Uint64("cpu-period"),
-		CPUQuota:     c.Int64("cpu-quota"),
-		CPUSetCPUs:   c.String("cpuset-cpus"),
-		CPUSetMems:   c.String("cpuset-mems"),
-		CPUShares:    c.Uint64("cpu-shares"),
+		AddHost:      addHost,
+		CgroupParent: c.Flag("cgroup-parent").Value.String(),
+		CPUPeriod:    cpuPeriod,
+		CPUQuota:     cpuQuota,
+		CPUSetCPUs:   c.Flag("cpuset-cpus").Value.String(),
+		CPUSetMems:   c.Flag("cpuset-mems").Value.String(),
+		CPUShares:    cpuShares,
+		DNSSearch:    dnsSearch,
+		DNSServers:   dnsServers,
+		DNSOptions:   dnsOptions,
+		HTTPProxy:    httpProxy,
 		Memory:       memoryLimit,
 		MemorySwap:   memorySwap,
-		ShmSize:      c.String("shm-size"),
-		Ulimit:       append(defaultLimits, c.StringSlice("ulimit")...),
-		Volumes:      c.StringSlice("volume"),
+		ShmSize:      c.Flag("shm-size").Value.String(),
+		Ulimit:       append(defaultLimits, ulimit...),
+		Volumes:      volumes,
 	}
-	if err := parseSecurityOpts(c.StringSlice("security-opt"), commonOpts); err != nil {
+	securityOpts, _ := c.Flags().GetStringArray("security-opt")
+	if err := parseSecurityOpts(securityOpts, commonOpts); err != nil {
 		return nil, err
 	}
 	return commonOpts, nil
@@ -137,32 +168,47 @@ func parseSecurityOpts(securityOpts []string, commonOpts *buildah.CommonBuildOpt
 	return nil
 }
 
+func ParseVolume(volume string) (specs.Mount, error) {
+	mount := specs.Mount{}
+	arr := strings.SplitN(volume, ":", 3)
+	if len(arr) < 2 {
+		return mount, errors.Errorf("incorrect volume format %q, should be host-dir:ctr-dir[:option]", volume)
+	}
+	if err := ValidateVolumeHostDir(arr[0]); err != nil {
+		return mount, err
+	}
+	if err := ValidateVolumeCtrDir(arr[1]); err != nil {
+		return mount, err
+	}
+	mountOptions := ""
+	if len(arr) > 2 {
+		mountOptions = arr[2]
+		if err := ValidateVolumeOpts(arr[2]); err != nil {
+			return mount, err
+		}
+	}
+	mountOpts := strings.Split(mountOptions, ",")
+	mount.Source = arr[0]
+	mount.Destination = arr[1]
+	mount.Type = "rbind"
+	mount.Options = mountOpts
+	return mount, nil
+}
+
 // ParseVolumes validates the host and container paths passed in to the --volume flag
 func ParseVolumes(volumes []string) error {
 	if len(volumes) == 0 {
 		return nil
 	}
 	for _, volume := range volumes {
-		arr := strings.SplitN(volume, ":", 3)
-		if len(arr) < 2 {
-			return errors.Errorf("incorrect volume format %q, should be host-dir:ctr-dir[:option]", volume)
-		}
-		if err := validateVolumeHostDir(arr[0]); err != nil {
+		if _, err := ParseVolume(volume); err != nil {
 			return err
-		}
-		if err := validateVolumeCtrDir(arr[1]); err != nil {
-			return err
-		}
-		if len(arr) > 2 {
-			if err := validateVolumeOpts(arr[2]); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
 }
 
-func validateVolumeHostDir(hostDir string) error {
+func ValidateVolumeHostDir(hostDir string) error {
 	if !filepath.IsAbs(hostDir) {
 		return errors.Errorf("invalid host path, must be an absolute path %q", hostDir)
 	}
@@ -172,14 +218,14 @@ func validateVolumeHostDir(hostDir string) error {
 	return nil
 }
 
-func validateVolumeCtrDir(ctrDir string) error {
+func ValidateVolumeCtrDir(ctrDir string) error {
 	if !filepath.IsAbs(ctrDir) {
 		return errors.Errorf("invalid container path, must be an absolute path %q", ctrDir)
 	}
 	return nil
 }
 
-func validateVolumeOpts(option string) error {
+func ValidateVolumeOpts(option string) error {
 	var foundRootPropagation, foundRWRO, foundLabelChange int
 	options := strings.Split(option, ",")
 	for _, opt := range options {
@@ -189,9 +235,12 @@ func validateVolumeOpts(option string) error {
 				return errors.Errorf("invalid options %q, can only specify 1 'rw' or 'ro' option", option)
 			}
 			foundRWRO++
-		case "z", "Z":
+		case "z", "Z", "O":
+			if opt == "O" && unshare.IsRootless() {
+				return errors.Errorf("invalid options %q, overlay mounts not supported in rootless mode", option)
+			}
 			if foundLabelChange > 1 {
-				return errors.Errorf("invalid options %q, can only specify 1 'z' or 'Z' option", option)
+				return errors.Errorf("invalid options %q, can only specify 1 'z', 'Z', or 'O' option", option)
 			}
 			foundLabelChange++
 		case "private", "rprivate", "shared", "rshared", "slave", "rslave", "unbindable", "runbindable":
@@ -231,82 +280,55 @@ func validateIPAddress(val string) (string, error) {
 	return "", fmt.Errorf("%s is not an ip address", val)
 }
 
-// ValidateFlags searches for StringFlags or StringSlice flags that never had
-// a value set.  This commonly occurs when the CLI mistakenly takes the next
-// option and uses it as a value.
-func ValidateFlags(c *cli.Context, flags []cli.Flag) error {
-	re, err := regexp.Compile("^-.+")
-	if err != nil {
-		return errors.Wrap(err, "compiling regex failed")
-	}
-
-	// The --cmd flag can have a following command i.e. --cmd="--help".
-	// Let's skip this check just for the --cmd flag.
-	for _, flag := range flags {
-		switch reflect.TypeOf(flag).String() {
-		case "cli.StringSliceFlag":
-			{
-				f := flag.(cli.StringSliceFlag)
-				name := strings.Split(f.Name, ",")
-				if f.Name == "cmd" {
-					continue
-				}
-				val := c.StringSlice(name[0])
-				for _, v := range val {
-					if ok := re.MatchString(v); ok {
-						return errors.Errorf("option --%s requires a value", name[0])
-					}
-				}
-			}
-		case "cli.StringFlag":
-			{
-				f := flag.(cli.StringFlag)
-				name := strings.Split(f.Name, ",")
-				if f.Name == "cmd" {
-					continue
-				}
-				val := c.String(name[0])
-				if ok := re.MatchString(val); ok {
-					return errors.Errorf("option --%s requires a value", name[0])
-				}
-			}
-		}
-	}
-	return nil
-}
-
 // SystemContextFromOptions returns a SystemContext populated with values
 // per the input parameters provided by the caller for the use in authentication.
-func SystemContextFromOptions(c *cli.Context) (*types.SystemContext, error) {
+func SystemContextFromOptions(c *cobra.Command) (*types.SystemContext, error) {
+	certDir, err := c.Flags().GetString("cert-dir")
+	if err != nil {
+		certDir = ""
+	}
 	ctx := &types.SystemContext{
-		DockerCertPath: c.String("cert-dir"),
+		DockerCertPath: certDir,
 	}
-	if c.IsSet("tls-verify") {
-		ctx.DockerInsecureSkipTLSVerify = !c.BoolT("tls-verify")
-		ctx.OCIInsecureSkipTLSVerify = !c.BoolT("tls-verify")
-		ctx.DockerDaemonInsecureSkipTLSVerify = !c.BoolT("tls-verify")
+	tlsVerify, err := c.Flags().GetBool("tls-verify")
+	if err == nil && c.Flag("tls-verify").Changed {
+		ctx.DockerInsecureSkipTLSVerify = types.NewOptionalBool(!tlsVerify)
+		ctx.OCIInsecureSkipTLSVerify = !tlsVerify
+		ctx.DockerDaemonInsecureSkipTLSVerify = !tlsVerify
 	}
-	if c.IsSet("creds") {
+	creds, err := c.Flags().GetString("creds")
+	if err == nil && c.Flag("creds").Changed {
 		var err error
-		ctx.DockerAuthConfig, err = getDockerAuth(c.String("creds"))
+		ctx.DockerAuthConfig, err = getDockerAuth(creds)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if c.IsSet("signature-policy") {
-		ctx.SignaturePolicyPath = c.String("signature-policy")
+	sigPolicy, err := c.Flags().GetString("signature-policy")
+	if err == nil && c.Flag("signature-policy").Changed {
+		ctx.SignaturePolicyPath = sigPolicy
 	}
-	if c.IsSet("authfile") {
-		ctx.AuthFilePath = c.String("authfile")
+	authfile, err := c.Flags().GetString("authfile")
+	if err == nil {
+		ctx.AuthFilePath = getAuthFile(authfile)
 	}
-	if c.GlobalIsSet("registries-conf") {
-		ctx.SystemRegistriesConfPath = c.GlobalString("registries-conf")
+	regConf, err := c.Flags().GetString("registries-conf")
+	if err == nil && c.Flag("registries-conf").Changed {
+		ctx.SystemRegistriesConfPath = regConf
 	}
-	if c.GlobalIsSet("registries-conf-dir") {
-		ctx.RegistriesDirPath = c.GlobalString("registries-conf-dir")
+	regConfDir, err := c.Flags().GetString("registries-conf-dir")
+	if err == nil && c.Flag("registries-conf-dir").Changed {
+		ctx.RegistriesDirPath = regConfDir
 	}
 	ctx.DockerRegistryUserAgent = fmt.Sprintf("Buildah/%s", buildah.Version)
 	return ctx, nil
+}
+
+func getAuthFile(authfile string) string {
+	if authfile != "" {
+		return authfile
+	}
+	return os.Getenv("REGISTRY_AUTH_FILE")
 }
 
 func parseCreds(creds string) (string, string) {
@@ -345,9 +367,9 @@ func getDockerAuth(creds string) (*types.DockerAuthConfig, error) {
 }
 
 // IDMappingOptions parses the build options related to user namespaces and ID mapping.
-func IDMappingOptions(c *cli.Context) (usernsOptions buildah.NamespaceOptions, idmapOptions *buildah.IDMappingOptions, err error) {
-	user := c.String("userns-uid-map-user")
-	group := c.String("userns-gid-map-group")
+func IDMappingOptions(c *cobra.Command, isolation buildah.Isolation) (usernsOptions buildah.NamespaceOptions, idmapOptions *buildah.IDMappingOptions, err error) {
+	user := c.Flag("userns-uid-map-user").Value.String()
+	group := c.Flag("userns-gid-map-group").Value.String()
 	// If only the user or group was specified, use the same value for the
 	// other, since we need both in order to initialize the maps using the
 	// names.
@@ -366,6 +388,7 @@ func IDMappingOptions(c *cli.Context) (usernsOptions buildah.NamespaceOptions, i
 		}
 		mappings = submappings
 	}
+	globalOptions := c.PersistentFlags()
 	// We'll parse the UID and GID mapping options the same way.
 	buildIDMap := func(basemap []idtools.IDMap, option string) ([]specs.LinuxIDMapping, error) {
 		outmap := make([]specs.LinuxIDMapping, 0, len(basemap))
@@ -380,11 +403,11 @@ func IDMappingOptions(c *cli.Context) (usernsOptions buildah.NamespaceOptions, i
 		// Parse the flag's value as one or more triples (if it's even
 		// been set), and append them.
 		var spec []string
-		if c.GlobalIsSet(option) {
-			spec = c.GlobalStringSlice(option)
+		if globalOptions.Lookup(option) != nil && globalOptions.Lookup(option).Changed {
+			spec, _ = globalOptions.GetStringSlice(option)
 		}
-		if c.IsSet(option) {
-			spec = c.StringSlice(option)
+		if c.Flag(option).Changed {
+			spec, _ = c.Flags().GetStringSlice(option)
 		}
 		idmap, err := parseIDMap(spec)
 		if err != nil {
@@ -416,6 +439,7 @@ func IDMappingOptions(c *cli.Context) (usernsOptions buildah.NamespaceOptions, i
 	if len(gidmap) == 0 && len(uidmap) != 0 {
 		gidmap = uidmap
 	}
+
 	// By default, having mappings configured means we use a user
 	// namespace.  Otherwise, we don't.
 	usernsOption := buildah.NamespaceOption{
@@ -424,8 +448,8 @@ func IDMappingOptions(c *cli.Context) (usernsOptions buildah.NamespaceOptions, i
 	}
 	// If the user specifically requested that we either use or don't use
 	// user namespaces, override that default.
-	if c.IsSet("userns") {
-		how := c.String("userns")
+	if c.Flag("userns").Changed {
+		how := c.Flag("userns").Value.String()
 		switch how {
 		case "", "container":
 			usernsOption.Host = false
@@ -440,7 +464,12 @@ func IDMappingOptions(c *cli.Context) (usernsOptions buildah.NamespaceOptions, i
 		}
 	}
 	usernsOptions = buildah.NamespaceOptions{usernsOption}
-	if !c.IsSet("net") {
+
+	// Because --net and --network are technically two different flags, we need
+	// to check each for nil and .Changed
+	usernet := c.Flags().Lookup("net")
+	usernetwork := c.Flags().Lookup("network")
+	if (usernet != nil && usernetwork != nil) && (!usernet.Changed && !usernetwork.Changed) {
 		usernsOptions = append(usernsOptions, buildah.NamespaceOption{
 			Name: string(specs.NetworkNamespace),
 			Host: usernsOption.Host,
@@ -486,12 +515,12 @@ func parseIDMap(spec []string) (m [][3]uint32, err error) {
 }
 
 // NamespaceOptions parses the build options for all namespaces except for user namespace.
-func NamespaceOptions(c *cli.Context) (namespaceOptions buildah.NamespaceOptions, networkPolicy buildah.NetworkConfigurationPolicy, err error) {
+func NamespaceOptions(c *cobra.Command) (namespaceOptions buildah.NamespaceOptions, networkPolicy buildah.NetworkConfigurationPolicy, err error) {
 	options := make(buildah.NamespaceOptions, 0, 7)
 	policy := buildah.NetworkDefault
-	for _, what := range []string{string(specs.IPCNamespace), "net", string(specs.PIDNamespace), string(specs.UTSNamespace)} {
-		if c.IsSet(what) {
-			how := c.String(what)
+	for _, what := range []string{string(specs.IPCNamespace), "net", "network", string(specs.PIDNamespace), string(specs.UTSNamespace)} {
+		if c.Flags().Lookup(what) != nil && c.Flag(what).Changed {
+			how := c.Flag(what).Value.String()
 			switch what {
 			case "net", "network":
 				what = string(specs.NetworkNamespace)
@@ -560,9 +589,10 @@ func defaultIsolation() (buildah.Isolation, error) {
 }
 
 // IsolationOption parses the --isolation flag.
-func IsolationOption(c *cli.Context) (buildah.Isolation, error) {
-	if c.String("isolation") != "" {
-		switch strings.ToLower(c.String("isolation")) {
+func IsolationOption(c *cobra.Command) (buildah.Isolation, error) {
+	isolation, _ := c.Flags().GetString("isolation")
+	if isolation != "" {
+		switch strings.ToLower(isolation) {
 		case "oci":
 			return buildah.IsolationOCI, nil
 		case "rootless":
@@ -570,8 +600,27 @@ func IsolationOption(c *cli.Context) (buildah.Isolation, error) {
 		case "chroot":
 			return buildah.IsolationChroot, nil
 		default:
-			return 0, errors.Errorf("unrecognized isolation type %q", c.String("isolation"))
+			return 0, errors.Errorf("unrecognized isolation type %q", isolation)
 		}
 	}
 	return defaultIsolation()
+}
+
+// ScrubServer removes 'http://' or 'https://' from the front of the
+// server/registry string if either is there.  This will be mostly used
+// for user input from 'buildah login' and 'buildah logout'.
+func ScrubServer(server string) string {
+	server = strings.TrimPrefix(server, "https://")
+	return strings.TrimPrefix(server, "http://")
+}
+
+// RegistryFromFullName gets the registry from the input. If the input is of the form
+// quay.io/myuser/myimage, it will parse it and just return quay.io
+// It also returns true if a full image name was given
+func RegistryFromFullName(input string) string {
+	split := strings.Split(input, "/")
+	if len(split) > 1 {
+		return split[0]
+	}
+	return split[0]
 }

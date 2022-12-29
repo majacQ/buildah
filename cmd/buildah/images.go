@@ -4,20 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"regexp"
+	"sort"
 	"strings"
-	"text/template"
 	"time"
 
-	"github.com/containers/buildah/imagebuildah"
 	buildahcli "github.com/containers/buildah/pkg/cli"
+	"github.com/containers/buildah/pkg/formats"
 	"github.com/containers/buildah/pkg/parse"
 	is "github.com/containers/image/storage"
+	"github.com/containers/image/types"
 	"github.com/containers/storage"
+	units "github.com/docker/go-units"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
+	"github.com/spf13/cobra"
 )
 
 type jsonImage struct {
@@ -26,12 +26,13 @@ type jsonImage struct {
 }
 
 type imageOutputParams struct {
-	Tag       string
-	ID        string
-	Name      string
-	Digest    string
-	CreatedAt string
-	Size      string
+	Tag          string
+	ID           string
+	Name         string
+	Digest       string
+	CreatedAt    string
+	Size         string
+	CreatedAtRaw time.Time
 }
 
 type imageOptions struct {
@@ -47,67 +48,64 @@ type imageOptions struct {
 type filterParams struct {
 	dangling         string
 	label            string
-	beforeImage      string // Images are sorted by date, so we can just output until we see the image
-	sinceImage       string // Images are sorted by date, so we can just output until we don't see the image
+	beforeImage      string
+	sinceImage       string
 	beforeDate       time.Time
 	sinceDate        time.Time
 	referencePattern string
 }
 
-var (
-	imagesFlags = []cli.Flag{
-		cli.BoolFlag{
-			Name:  "all, a",
-			Usage: "show all images, including intermediate images from a build",
-		},
-		cli.BoolFlag{
-			Name:  "digests",
-			Usage: "show digests",
-		},
-		cli.StringFlag{
-			Name:  "filter, f",
-			Usage: "filter output based on conditions provided",
-		},
-		cli.StringFlag{
-			Name:  "format",
-			Usage: "pretty-print images using a Go template",
-		},
-		cli.BoolFlag{
-			Name:  "json",
-			Usage: "output in JSON format",
-		},
-		cli.BoolFlag{
-			Name:  "noheading, n",
-			Usage: "do not print column headings",
-		},
-		cli.BoolFlag{
-			Name:  "no-trunc, notruncate",
-			Usage: "do not truncate output",
-		},
-		cli.BoolFlag{
-			Name:  "quiet, q",
-			Usage: "display only image IDs",
-		},
-	}
+type imageResults struct {
+	imageOptions
+	filter string
+}
 
-	imagesDescription = "Lists locally stored images."
-	imagesCommand     = cli.Command{
-		Name:                   "images",
-		Usage:                  "List images in local storage",
-		Description:            imagesDescription,
-		Flags:                  sortFlags(imagesFlags),
-		Action:                 imagesCmd,
-		ArgsUsage:              "[imageName]",
-		SkipArgReorder:         true,
-		UseShortOptionHandling: true,
-	}
-)
+var imagesHeader = map[string]string{
+	"Name":      "REPOSITORY",
+	"Tag":       "TAG",
+	"ID":        "IMAGE ID",
+	"CreatedAt": "CREATED",
+	"Size":      "SIZE",
+}
 
-func imagesCmd(c *cli.Context) error {
+func init() {
+	var (
+		opts              imageResults
+		imagesDescription = "\n  Lists locally stored images."
+	)
+	imagesCommand := &cobra.Command{
+		Use:   "images",
+		Short: "List images in local storage",
+		Long:  imagesDescription,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return imagesCmd(cmd, args, &opts)
+		},
+		Example: `buildah images --all
+  buildah images [imageName]
+  buildah images --format '{{.ID}} {{.Name}} {{.Size}} {{.CreatedAtRaw}}'`,
+	}
+	imagesCommand.SetUsageTemplate(UsageTemplate())
+
+	flags := imagesCommand.Flags()
+	flags.SetInterspersed(false)
+	flags.BoolVarP(&opts.all, "all", "a", false, "show all images, including intermediate images from a build")
+	flags.BoolVar(&opts.digests, "digests", false, "show digests")
+	flags.StringVarP(&opts.filter, "filter", "f", "", "filter output based on conditions provided")
+	flags.StringVar(&opts.format, "format", "", "pretty-print images using a Go template")
+	flags.BoolVar(&opts.json, "json", false, "output in JSON format")
+	flags.BoolVarP(&opts.noHeading, "noheading", "n", false, "do not print column headings")
+	// TODO needs alias here -- to `notruncate`
+	flags.BoolVar(&opts.truncate, "no-trunc", false, "do not truncate output")
+	flags.BoolVarP(&opts.quiet, "quiet", "q", false, "display only image IDs")
+
+	rootCmd.AddCommand(imagesCommand)
+}
+
+func imagesCmd(c *cobra.Command, args []string, iopts *imageResults) error {
+
 	name := ""
-	args := c.Args()
 	if len(args) > 0 {
-		if c.Bool("all") {
+		if iopts.all {
 			return errors.Errorf("when using the --all switch, you may not pass any images names or IDs")
 		}
 
@@ -115,18 +113,20 @@ func imagesCmd(c *cli.Context) error {
 			return err
 		}
 		if len(args) == 1 {
-			name = args.Get(0)
+			name = args[0]
 		} else {
 			return errors.New("'buildah images' requires at most 1 argument")
 		}
 	}
 
-	if err := parse.ValidateFlags(c, imagesFlags); err != nil {
-		return err
-	}
 	store, err := getStore(c)
 	if err != nil {
 		return err
+	}
+
+	systemContext, err := parse.SystemContextFromOptions(c)
+	if err != nil {
+		return errors.Wrapf(err, "error building system context")
 	}
 
 	images, err := store.Images()
@@ -134,34 +134,30 @@ func imagesCmd(c *cli.Context) error {
 		return errors.Wrapf(err, "error reading images")
 	}
 
-	if c.IsSet("quiet") && c.IsSet("format") {
+	if iopts.quiet && iopts.format != "" {
 		return errors.Errorf("quiet and format are mutually exclusive")
 	}
 
 	opts := imageOptions{
-		all:       c.Bool("all"),
-		digests:   c.Bool("digests"),
-		format:    c.String("format"),
-		json:      c.Bool("json"),
-		noHeading: c.Bool("noheading"),
-		truncate:  !c.Bool("notruncate"),
-		quiet:     c.Bool("quiet"),
+		all:       iopts.all,
+		digests:   iopts.digests,
+		format:    iopts.format,
+		json:      iopts.json,
+		noHeading: iopts.noHeading,
+		truncate:  !iopts.truncate,
+		quiet:     iopts.quiet,
 	}
 	ctx := getContext()
 
 	var params *filterParams
-	if c.IsSet("filter") {
-		params, err = parseFilter(ctx, store, images, c.String("filter"))
+	if iopts.filter != "" {
+		params, err = parseFilter(ctx, store, images, iopts.filter)
 		if err != nil {
 			return errors.Wrapf(err, "error parsing filter")
 		}
 	}
 
-	if len(images) > 0 && !opts.noHeading && !opts.quiet && opts.format == "" && !opts.json {
-		outputHeader(opts.truncate, opts.digests)
-	}
-
-	return outputImages(ctx, images, store, params, name, opts)
+	return outputImages(ctx, systemContext, store, images, params, name, opts)
 }
 
 func parseFilter(ctx context.Context, store storage.Store, images []storage.Image, filter string) (*filterParams, error) {
@@ -227,105 +223,91 @@ func setFilterDate(ctx context.Context, store storage.Store, images []storage.Im
 	return time.Time{}, fmt.Errorf("Could not locate image %q", imgName)
 }
 
-func outputHeader(truncate, digests bool) {
-	if truncate {
-		fmt.Printf("%-56s %-20s %-20s ", "IMAGE NAME", "IMAGE TAG", "IMAGE ID")
-	} else {
-		fmt.Printf("%-56s %-20s %-64s ", "IMAGE NAME", "IMAGE TAG", "IMAGE ID")
+func outputHeader(opts imageOptions) string {
+	if opts.format != "" {
+		return strings.Replace(opts.format, `\t`, "\t", -1)
+	}
+	if opts.quiet {
+		return formats.IDString
+	}
+	format := "table {{.Name}}\t{{.Tag}}\t"
+	if opts.noHeading {
+		format = "{{.Name}}\t{{.Tag}}\t"
 	}
 
-	if digests {
-		fmt.Printf("%-71s ", "DIGEST")
+	if opts.digests {
+		format += "{{.Digest}}\t"
 	}
-
-	fmt.Printf("%-22s %s\n", "CREATED AT", "SIZE")
+	format += "{{.ID}}\t{{.CreatedAt}}\t{{.Size}}"
+	return format
 }
 
-func outputImages(ctx context.Context, images []storage.Image, store storage.Store, filters *filterParams, argName string, opts imageOptions) error {
+type imagesSorted []imageOutputParams
+
+func outputImages(ctx context.Context, systemContext *types.SystemContext, store storage.Store, images []storage.Image, filters *filterParams, argName string, opts imageOptions) error {
 	found := false
+	var imagesParams imagesSorted
+	jsonImages := []jsonImage{}
 	for _, image := range images {
 		createdTime := image.Created
-
-		inspectedTime, digest, size, _ := getDateAndDigestAndSize(ctx, image, store)
+		inspectedTime, digest, size, _ := getDateAndDigestAndSize(ctx, store, image)
 		if !inspectedTime.IsZero() {
 			if createdTime != inspectedTime {
-				logrus.Debugf("image record and configuration disagree on the image's creation time for %q, using the one from the configuration", image)
+				logrus.Debugf("image record and configuration disagree on the image's creation time for %q, using the configuration creation time: %s", image.ID, inspectedTime)
 				createdTime = inspectedTime
 			}
 		}
 		createdTime = createdTime.Local()
 
-		// If all is false and the image doesn't have a name, check to see if the top layer of the image is a parent
-		// to another image's top layer. If it is, then it is an intermediate image so don't print out if the --all flag
-		// is not set.
-		isParent, err := imageIsParent(store, image.TopLayer)
-		if err != nil {
-			logrus.Errorf("error checking if image is a parent %q: %v", image.ID, err)
-		}
-		if !opts.all && len(image.Names) == 0 && isParent {
-			continue
+		// If "all" is false and this image doesn't have a name, check
+		// to see if the image is the parent of any other image.  If it
+		// is, then it is an intermediate image, so don't list it if
+		// the --all flag is not set.
+		if !opts.all && len(image.Names) == 0 {
+			isParent, err := imageIsParent(ctx, systemContext, store, &image)
+			if err != nil {
+				logrus.Errorf("error checking if image is a parent %q: %v", image.ID, err)
+			}
+			if isParent {
+				continue
+			}
 		}
 
-		names := []string{}
-		if len(image.Names) > 0 {
-			names = image.Names
-		} else {
-			// images without names should be printed with "<none>" as the image name
-			names = append(names, "<none>:<none>")
+		imageID := "sha256:" + image.ID
+		if opts.truncate {
+			imageID = shortID(image.ID)
 		}
-		if opts.quiet && argName == "" {
-			fmt.Printf("%-64s\n", image.ID)
-			// We only want to print each id once
-			continue
-		}
-		if opts.json && argName == "" {
-			JSONImage := jsonImage{ID: image.ID, Names: image.Names}
-			data, err2 := json.MarshalIndent(JSONImage, "", "    ")
-			if err2 != nil {
-				return err2
-			}
-			fmt.Printf("%s\n", data)
-			continue
-		}
-		for name, tags := range imagebuildah.ReposToMap(names) {
+
+	outer:
+		for name, tags := range imageReposToMap(image.Names) {
 			for _, tag := range tags {
 				if !matchesReference(name+":"+tag, argName) {
 					continue
 				}
 				found = true
 
-				if !matchesFilter(ctx, image, store, name+":"+tag, filters) {
+				if !matchesFilter(ctx, store, image, name+":"+tag, filters) {
 					continue
-				}
-				if opts.quiet {
-					fmt.Printf("%-64s\n", image.ID)
-					// We only want to print each id once
-					break
 				}
 				if opts.json {
-					JSONImage := jsonImage{ID: image.ID, Names: image.Names}
-					data, err2 := json.MarshalIndent(JSONImage, "", "    ")
-					if err2 != nil {
-						return err2
-					}
-					fmt.Printf("%s\n", data)
-					break
+					jsonImages = append(jsonImages, jsonImage{ID: image.ID, Names: image.Names})
+					// We only want to print each id once
+					break outer
 				}
 				params := imageOutputParams{
-					Tag:       tag,
-					ID:        image.ID,
-					Name:      name,
-					Digest:    digest,
-					CreatedAt: createdTime.Format("Jan 2, 2006 15:04"),
-					Size:      formattedSize(size),
+					Tag:          tag,
+					ID:           imageID,
+					Name:         name,
+					Digest:       digest,
+					CreatedAtRaw: createdTime,
+					CreatedAt:    units.HumanDuration(time.Since((createdTime))) + " ago",
+					Size:         formattedSize(size),
 				}
-				if opts.format != "" {
-					if err := outputUsingTemplate(opts.format, params); err != nil {
-						return err
-					}
-					continue
+				imagesParams = append(imagesParams, params)
+				if opts.quiet {
+					// We only want to print each id once
+					break outer
 				}
-				outputUsingFormatString(opts.truncate, opts.digests, params)
 			}
 		}
 	}
@@ -333,17 +315,57 @@ func outputImages(ctx context.Context, images []storage.Image, store storage.Sto
 	if !found && argName != "" {
 		return errors.Errorf("No such image %s", argName)
 	}
-
+	if opts.json {
+		data, err := json.MarshalIndent(jsonImages, "", "    ")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s\n", data)
+		return nil
+	}
+	imagesParams = sortImagesOutput(imagesParams)
+	out := formats.StdoutTemplateArray{Output: imagesToGeneric(imagesParams), Template: outputHeader(opts), Fields: imagesHeader}
+	if err := formats.Writer(out).Out(); err != nil {
+		panic(fmt.Sprintf("error outputting image information: %v", err))
+	}
 	return nil
 }
 
-func matchesFilter(ctx context.Context, image storage.Image, store storage.Store, name string, params *filterParams) bool {
+func shortID(id string) string {
+	idTruncLength := 12
+	if len(id) > idTruncLength {
+		return id[:idTruncLength]
+	}
+	return id
+}
+
+func sortImagesOutput(imagesOutput imagesSorted) imagesSorted {
+	sort.Sort(imagesOutput)
+	return imagesOutput
+}
+
+func (a imagesSorted) Less(i, j int) bool {
+	return a[i].CreatedAtRaw.After(a[j].CreatedAtRaw)
+}
+func (a imagesSorted) Len() int      { return len(a) }
+func (a imagesSorted) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+
+func imagesToGeneric(templParams []imageOutputParams) (genericParams []interface{}) {
+	if len(templParams) > 0 {
+		for _, v := range templParams {
+			genericParams = append(genericParams, interface{}(v))
+		}
+	}
+	return genericParams
+}
+
+func matchesFilter(ctx context.Context, store storage.Store, image storage.Image, name string, params *filterParams) bool {
 	if params == nil {
 		return true
 	}
 	if params.dangling != "" && !matchesDangling(name, params.dangling) {
 		return false
-	} else if params.label != "" && !matchesLabel(ctx, image, store, params.label) {
+	} else if params.label != "" && !matchesLabel(ctx, store, image, params.label) {
 		return false
 	} else if params.beforeImage != "" && !matchesBeforeImage(image, name, params) {
 		return false
@@ -356,15 +378,15 @@ func matchesFilter(ctx context.Context, image storage.Image, store storage.Store
 }
 
 func matchesDangling(name string, dangling string) bool {
-	if dangling == "false" && name != "<none>" {
+	if dangling == "false" && !strings.Contains(name, "<none>") {
 		return true
-	} else if dangling == "true" && name == "<none>" {
+	} else if dangling == "true" && strings.Contains(name, "<none>") {
 		return true
 	}
 	return false
 }
 
-func matchesLabel(ctx context.Context, image storage.Image, store storage.Store, label string) bool {
+func matchesLabel(ctx context.Context, store storage.Store, image storage.Image, label string) bool {
 	storeRef, err := is.Transport.ParseStoreReference(store, image.ID)
 	if err != nil {
 		return false
@@ -439,35 +461,27 @@ func formattedSize(size int64) string {
 	return fmt.Sprintf("%.3g %s", formattedSize, suffixes[count])
 }
 
-func outputUsingTemplate(format string, params imageOutputParams) error {
-	if matched, err := regexp.MatchString("{{.*}}", format); err != nil {
-		return errors.Wrapf(err, "error validating format provided: %s", format)
-	} else if !matched {
-		return errors.Errorf("error invalid format provided: %s", format)
+// reposToMap parses the specified repotags and returns a map with repositories
+// as keys and the corresponding arrays of tags as values.
+func imageReposToMap(repotags []string) map[string][]string {
+	// map format is repo -> tag
+	repos := make(map[string][]string)
+	for _, repo := range repotags {
+		var repository, tag string
+		if strings.Contains(repo, ":") {
+			li := strings.LastIndex(repo, ":")
+			repository = repo[0:li]
+			tag = repo[li+1:]
+		} else if len(repo) > 0 {
+			repository = repo
+			tag = "<none>"
+		} else {
+			logrus.Warnf("Found image with empty name")
+		}
+		repos[repository] = append(repos[repository], tag)
 	}
-
-	tmpl, err := template.New("image").Parse(format)
-	if err != nil {
-		return errors.Wrapf(err, "Template parsing error")
+	if len(repos) == 0 {
+		repos["<none>"] = []string{"<none>"}
 	}
-
-	err = tmpl.Execute(os.Stdout, params)
-	if err != nil {
-		return err
-	}
-	fmt.Println()
-	return nil
-}
-
-func outputUsingFormatString(truncate, digests bool, params imageOutputParams) {
-	if truncate {
-		fmt.Printf("%-56s %-20s %-20.12s", params.Name, params.Tag, params.ID)
-	} else {
-		fmt.Printf("%-56s %-20s %-64s", params.Name, params.Tag, params.ID)
-	}
-
-	if digests {
-		fmt.Printf(" %-64s", params.Digest)
-	}
-	fmt.Printf(" %-22s %s\n", params.CreatedAt, params.Size)
+	return repos
 }

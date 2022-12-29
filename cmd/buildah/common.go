@@ -2,68 +2,109 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/containers/buildah"
-	"github.com/containers/buildah/util"
+	"github.com/containers/buildah/pkg/unshare"
 	is "github.com/containers/image/storage"
 	"github.com/containers/image/types"
-	lu "github.com/containers/libpod/pkg/util"
 	"github.com/containers/storage"
-	digest "github.com/opencontainers/go-digest"
+	"github.com/opencontainers/go-digest"
+	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
-	"github.com/urfave/cli"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 var needToShutdownStore = false
 
-func getStore(c *cli.Context) (storage.Store, error) {
-	options, err := lu.GetDefaultStoreOptions()
+func getStore(c *cobra.Command) (storage.Store, error) {
+	options, err := storage.DefaultStoreOptions(unshare.IsRootless(), unshare.GetRootlessUID())
 	if err != nil {
 		return nil, err
 	}
-	if c.GlobalIsSet("root") || c.GlobalIsSet("runroot") {
-		options.GraphRoot = c.GlobalString("root")
-		options.RunRoot = c.GlobalString("runroot")
+	if c.Flag("root").Changed || c.Flag("runroot").Changed {
+		options.GraphRoot = globalFlagResults.Root
+		options.RunRoot = globalFlagResults.RunRoot
 	}
-	if err := os.Setenv("XDG_RUNTIME_DIR", options.RunRoot); err != nil {
-		return nil, errors.New("could not set XDG_RUNTIME_DIR")
+	if unshare.IsRootless() && os.Getenv("XDG_RUNTIME_DIR") == "" {
+		runtimeDir, err := storage.GetRootlessRuntimeDir(unshare.GetRootlessUID())
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Setenv("XDG_RUNTIME_DIR", runtimeDir); err != nil {
+			return nil, errors.New("could not set XDG_RUNTIME_DIR")
+		}
 	}
 
-	if c.GlobalIsSet("storage-driver") {
-		options.GraphDriverName = c.GlobalString("storage-driver")
+	if c.Flag("storage-driver").Changed {
+		options.GraphDriverName = globalFlagResults.StorageDriver
 		// If any options setup in config, these should be dropped if user overrode the driver
 		options.GraphDriverOptions = []string{}
 	}
-	if c.GlobalIsSet("storage-opt") {
-		opts := c.GlobalStringSlice("storage-opt")
-		if len(opts) > 0 {
-			options.GraphDriverOptions = opts
+	if c.Flag("storage-opt").Changed {
+		if len(globalFlagResults.StorageOpts) > 0 {
+			options.GraphDriverOptions = globalFlagResults.StorageOpts
 		}
 	}
-	if c.GlobalIsSet("userns-uid-map") && c.GlobalIsSet("userns-gid-map") {
-		uopts := c.GlobalStringSlice("userns-uid-map")
-		gopts := c.GlobalStringSlice("userns-gid-map")
+
+	// Do not allow to mount a graphdriver that is not vfs if we are creating the userns as part
+	// of the mount command.
+	// Differently, allow the mount if we are already in a userns, as the mount point will still
+	// be accessible once "buildah mount" exits.
+	if os.Geteuid() != 0 && options.GraphDriverName != "vfs" {
+		return nil, fmt.Errorf("cannot mount using driver %s in rootless mode. You need to run it in a `buildah unshare` session", options.GraphDriverName)
+	}
+
+	// For uid/gid mappings, first we check the global definitions
+	if len(globalFlagResults.UserNSUID) > 0 || len(globalFlagResults.UserNSGID) > 0 {
+		if !(len(globalFlagResults.UserNSUID) > 0 && len(globalFlagResults.UserNSGID) > 0) {
+			return nil, errors.Errorf("--userns-uid-map and --userns-gid-map must be used together")
+		}
+		uopts := globalFlagResults.UserNSUID
+		gopts := globalFlagResults.UserNSGID
 		if len(uopts) == 0 {
 			return nil, errors.New("--userns-uid-map used with no mappings?")
 		}
 		if len(gopts) == 0 {
 			return nil, errors.New("--userns-gid-map used with no mappings?")
 		}
-		uidmap, gidmap, err := util.ParseIDMappings(uopts, gopts)
+		uidmap, gidmap, err := unshare.ParseIDMappings(uopts, gopts)
 		if err != nil {
 			return nil, err
 		}
 		options.UIDMap = uidmap
 		options.GIDMap = gidmap
-	} else if c.GlobalIsSet("userns-uid-map") {
-		return nil, errors.Errorf("--userns-uid-map requires --userns-gid-map")
-	} else if c.GlobalIsSet("userns-gid-map") {
-		return nil, errors.Errorf("--userns-gid-map requires --userns-uid-map")
 	}
+
+	// If a subcommand has the flags, check if they are set; if so, override the global values
+	localUIDMapFlag := c.Flags().Lookup("userns-uid-map")
+	localGIDMapFlag := c.Flags().Lookup("userns-gid-map")
+	if localUIDMapFlag != nil && localGIDMapFlag != nil && (localUIDMapFlag.Changed || localGIDMapFlag.Changed) {
+		if !(localUIDMapFlag.Changed && localGIDMapFlag.Changed) {
+			return nil, errors.Errorf("--userns-uid-map and --userns-gid-map must be used together")
+		}
+		// We know that the flags are both !nil and have been changed (i.e. have values)
+		uopts, _ := c.Flags().GetStringSlice("userns-uid-map")
+		gopts, _ := c.Flags().GetStringSlice("userns-gid-map")
+		if len(uopts) == 0 {
+			return nil, errors.New("--userns-uid-map used with no mappings?")
+		}
+		if len(gopts) == 0 {
+			return nil, errors.New("--userns-gid-map used with no mappings?")
+		}
+		uidmap, gidmap, err := unshare.ParseIDMappings(uopts, gopts)
+		if err != nil {
+			return nil, err
+		}
+		options.UIDMap = uidmap
+		options.GIDMap = gidmap
+	}
+
+	checkUmask()
+
 	store, err := storage.GetStore(options)
 	if store != nil {
 		is.Transport.SetStore(store)
@@ -75,7 +116,7 @@ func getStore(c *cli.Context) (storage.Store, error) {
 func openBuilder(ctx context.Context, store storage.Store, name string) (builder *buildah.Builder, err error) {
 	if name != "" {
 		builder, err = buildah.OpenBuilder(store, name)
-		if os.IsNotExist(err) {
+		if os.IsNotExist(errors.Cause(err)) {
 			options := buildah.ImportOptions{
 				Container: name,
 			}
@@ -110,7 +151,7 @@ func openImage(ctx context.Context, sc *types.SystemContext, store storage.Store
 	return builder, nil
 }
 
-func getDateAndDigestAndSize(ctx context.Context, image storage.Image, store storage.Store) (time.Time, string, int64, error) {
+func getDateAndDigestAndSize(ctx context.Context, store storage.Store, image storage.Image) (time.Time, string, int64, error) {
 	created := time.Time{}
 	is.Transport.SetStore(store)
 	storeRef, err := is.Transport.ParseStoreReference(store, image.ID)
@@ -150,11 +191,10 @@ func getContext() context.Context {
 	return context.TODO()
 }
 
-var userFlags = []cli.Flag{
-	cli.StringFlag{
-		Name:  "user",
-		Usage: "`user[:group]` to run the command as",
-	},
+func getUserFlags() pflag.FlagSet {
+	fs := pflag.FlagSet{}
+	fs.String("user", "", "`user[:group]` to run the command as")
+	return fs
 }
 
 func defaultFormat() string {
@@ -168,67 +208,161 @@ func defaultFormat() string {
 // imageIsParent goes through the layers in the store and checks if i.TopLayer is
 // the parent of any other layer in store. Double check that image with that
 // layer exists as well.
-func imageIsParent(store storage.Store, topLayer string) (bool, error) {
-	children, err := getChildren(store, topLayer)
+func imageIsParent(ctx context.Context, sc *types.SystemContext, store storage.Store, image *storage.Image) (bool, error) {
+	children, err := getChildren(ctx, sc, store, image, 1)
 	if err != nil {
 		return false, err
 	}
 	return len(children) > 0, nil
 }
 
-// getParent returns the image ID of the parent. Return nil if a parent is not found.
-func getParent(store storage.Store, topLayer string) (*storage.Image, error) {
+func getImageConfig(ctx context.Context, sc *types.SystemContext, store storage.Store, imageID string) (*imgspecv1.Image, error) {
+	ref, err := is.Transport.ParseStoreReference(store, imageID)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to parse reference to image %q", imageID)
+	}
+	image, err := ref.NewImage(ctx, sc)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to open image %q", imageID)
+	}
+	config, err := image.OCIConfig(ctx)
+	defer image.Close()
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read configuration from image %q", imageID)
+	}
+	return config, nil
+}
+
+func historiesDiffer(a, b []imgspecv1.History) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	i := 0
+	for i < len(a) {
+		if a[i].Created == nil && b[i].Created != nil {
+			break
+		}
+		if a[i].Created != nil && b[i].Created == nil {
+			break
+		}
+		if a[i].Created != nil && b[i].Created != nil && !a[i].Created.Equal(*(b[i].Created)) {
+			break
+		}
+		if a[i].CreatedBy != b[i].CreatedBy {
+			break
+		}
+		if a[i].Author != b[i].Author {
+			break
+		}
+		if a[i].Comment != b[i].Comment {
+			break
+		}
+		if a[i].EmptyLayer != b[i].EmptyLayer {
+			break
+		}
+		i++
+	}
+	return i != len(a)
+}
+
+// getParent returns the image's parent image. Return nil if a parent is not found.
+func getParent(ctx context.Context, sc *types.SystemContext, store storage.Store, child *storage.Image) (*storage.Image, error) {
 	images, err := store.Images()
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to retrieve images from store")
+		return nil, errors.Wrapf(err, "unable to retrieve image list from store")
 	}
-	layer, err := store.Layer(topLayer)
-	if err != nil {
-		return nil, errors.Wrapf(err, "unable to retrieve layers from store")
-	}
-	for _, img := range images {
-		if img.TopLayer == layer.Parent {
-			return &img, nil
+	var childTopLayer *storage.Layer
+	if child.TopLayer != "" {
+		childTopLayer, err = store.Layer(child.TopLayer)
+		if err != nil {
+			return nil, errors.Wrapf(err, "unable to retrieve information about layer %s from store", child.TopLayer)
 		}
+	}
+	childConfig, err := getImageConfig(ctx, sc, store, child.ID)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to read configuration from image %q", child.ID)
+	}
+	for _, parent := range images {
+		if parent.ID == child.ID {
+			continue
+		}
+		if childTopLayer != nil && parent.TopLayer != childTopLayer.Parent && parent.TopLayer != childTopLayer.ID {
+			continue
+		}
+		parentConfig, err := getImageConfig(ctx, sc, store, parent.ID)
+		if err != nil {
+			return nil, errors.Wrapf(err, "unable to read configuration from image %q", parent.ID)
+		}
+		if len(parentConfig.History)+1 != len(childConfig.History) {
+			continue
+		}
+		if len(parentConfig.RootFS.DiffIDs) > 0 {
+			if len(childConfig.RootFS.DiffIDs) < len(parentConfig.RootFS.DiffIDs) {
+				continue
+			}
+			childUsesAllParentLayers := true
+			for i := range parentConfig.RootFS.DiffIDs {
+				if childConfig.RootFS.DiffIDs[i] != parentConfig.RootFS.DiffIDs[i] {
+					childUsesAllParentLayers = false
+					break
+				}
+			}
+			if !childUsesAllParentLayers {
+				continue
+			}
+		}
+		if historiesDiffer(parentConfig.History, childConfig.History[:len(parentConfig.History)]) {
+			continue
+		}
+		return &parent, nil
 	}
 	return nil, nil
 }
 
 // getChildren returns a list of the imageIDs that depend on the image
-func getChildren(store storage.Store, topLayer string) ([]string, error) {
+func getChildren(ctx context.Context, sc *types.SystemContext, store storage.Store, parent *storage.Image, max int) ([]string, error) {
 	var children []string
 	images, err := store.Images()
 	if err != nil {
 		return nil, errors.Wrapf(err, "unable to retrieve images from store")
 	}
-	layers, err := store.Layers()
+	parentConfig, err := getImageConfig(ctx, sc, store, parent.ID)
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to retrieve layers from store")
+		return nil, errors.Wrapf(err, "unable to read configuration from image %q", parent.ID)
 	}
-
-	for _, layer := range layers {
-		if layer.Parent == topLayer {
-			if imageID := getImageOfTopLayer(images, layer.ID); len(imageID) > 0 {
-				children = append(children, imageID...)
+	for _, child := range images {
+		if child.ID == parent.ID {
+			continue
+		}
+		var childTopLayer *storage.Layer
+		if child.TopLayer != "" {
+			childTopLayer, err = store.Layer(child.TopLayer)
+			if err != nil {
+				return nil, errors.Wrapf(err, "unable to retrieve information about layer %q from store", child.TopLayer)
 			}
+			if childTopLayer.Parent != parent.TopLayer && childTopLayer.ID != parent.TopLayer {
+				continue
+			}
+		}
+		childConfig, err := getImageConfig(ctx, sc, store, child.ID)
+		if err != nil {
+			return nil, errors.Wrapf(err, "unable to read configuration from image %q", child.ID)
+		}
+		if len(parentConfig.History)+1 != len(childConfig.History) {
+			continue
+		}
+		if historiesDiffer(parentConfig.History, childConfig.History[:len(parentConfig.History)]) {
+			continue
+		}
+		children = append(children, child.ID)
+		if max > 0 && len(children) >= max {
+			break
 		}
 	}
 	return children, nil
 }
 
-// getImageOfTopLayer returns the image ID where layer is the top layer of the image
-func getImageOfTopLayer(images []storage.Image, layer string) []string {
-	var matches []string
-	for _, img := range images {
-		if img.TopLayer == layer {
-			matches = append(matches, img.ID)
-		}
-	}
-	return matches
-}
-
-func getFormat(c *cli.Context) (string, error) {
-	format := strings.ToLower(c.String("format"))
+func getFormat(format string) (string, error) {
 	switch format {
 	case buildah.OCI:
 		return buildah.OCIv1ImageManifest, nil
@@ -239,9 +373,36 @@ func getFormat(c *cli.Context) (string, error) {
 	}
 }
 
-func sortFlags(flags []cli.Flag) []cli.Flag {
-	sort.Slice(flags, func(i, j int) bool {
-		return strings.Compare(flags[i].GetName(), flags[j].GetName()) < 0
-	})
-	return flags
+// Tail returns a string slice after the first element unless there are
+// not enough elements, then it returns an empty slice.  This is to replace
+// the urfavecli Tail method for args
+func Tail(a []string) []string {
+	if len(a) >= 2 {
+		return a[1:]
+	}
+	return []string{}
+}
+
+// UsageTemplate returns the usage template for podman commands
+// This blocks the desplaying of the global options. The main podman
+// command should not use this.
+func UsageTemplate() string {
+	return `Usage:{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+Aliases:
+  {{.NameAndAliases}}{{end}}{{if .HasExample}}
+
+Examples:
+  {{.Example}}{{end}}{{if .HasAvailableSubCommands}}
+
+Available Commands:{{range .Commands}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+{{end}}
+`
 }

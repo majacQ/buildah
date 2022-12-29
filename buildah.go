@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/containers/buildah/docker"
 	"github.com/containers/buildah/util"
@@ -25,7 +26,7 @@ const (
 	Package = "buildah"
 	// Version for the Package.  Bump version in contrib/rpm/buildah.spec
 	// too.
-	Version = "1.5"
+	Version = "1.8.4"
 	// The value we use to identify what type of information, currently a
 	// serialized Builder structure, we are using as per-container state.
 	// This should only be changed when we make incompatible changes to
@@ -175,12 +176,23 @@ type Builder struct {
 	// after processing the AddCapabilities set, when running commands in the container.
 	// If a capability appears in both lists, it will be dropped.
 	DropCapabilities []string
+	// PrependedEmptyLayers are history entries that we'll add to a
+	// committed image, after any history items that we inherit from a base
+	// image, but before the history item for the layer that we're
+	// committing.
+	PrependedEmptyLayers []v1.History
+	// AppendedEmptyLayers are history entries that we'll add to a
+	// committed image after the history item for the layer that we're
+	// committing.
+	AppendedEmptyLayers []v1.History
 
 	CommonBuildOpts *CommonBuildOptions
 	// TopLayer is the top layer of the image
 	TopLayer string
 	// Format for the build Image
 	Format string
+	// TempVolumes are temporary mount points created during container runs
+	TempVolumes map[string]bool
 }
 
 // BuilderInfo are used as objects to display container information
@@ -209,11 +221,24 @@ type BuilderInfo struct {
 	DefaultCapabilities   []string
 	AddCapabilities       []string
 	DropCapabilities      []string
+	History               []v1.History
 }
 
 // GetBuildInfo gets a pointer to a Builder object and returns a BuilderInfo object from it.
 // This is used in the inspect command to display Manifest and Config as string and not []byte.
 func GetBuildInfo(b *Builder) BuilderInfo {
+	history := copyHistory(b.OCIv1.History)
+	history = append(history, copyHistory(b.PrependedEmptyLayers)...)
+	now := time.Now().UTC()
+	created := &now
+	history = append(history, v1.History{
+		Created:    created,
+		CreatedBy:  b.ImageCreatedBy,
+		Author:     b.Maintainer(),
+		Comment:    b.ImageHistoryComment,
+		EmptyLayer: false,
+	})
+	history = append(history, copyHistory(b.AppendedEmptyLayers)...)
 	return BuilderInfo{
 		Type:                  b.Type,
 		FromImage:             b.FromImage,
@@ -239,6 +264,7 @@ func GetBuildInfo(b *Builder) BuilderInfo {
 		DefaultCapabilities:   append([]string{}, util.DefaultCapabilities...),
 		AddCapabilities:       append([]string{}, b.AddCapabilities...),
 		DropCapabilities:      append([]string{}, b.DropCapabilities...),
+		History:               history,
 	}
 }
 
@@ -258,8 +284,16 @@ type CommonBuildOptions struct {
 	CPUSetCPUs string
 	// CPUSetMems memory nodes (MEMs) in which to allow execution (0-3, 0,1). Only effective on NUMA systems.
 	CPUSetMems string
+	// HTTPProxy determines whether *_proxy env vars from the build host are passed into the container.
+	HTTPProxy bool
 	// Memory is the upper limit (in bytes) on how much memory running containers can use.
 	Memory int64
+	// DNSSearch is the list of DNS search domains to add to the build container's /etc/resolv.conf
+	DNSSearch []string
+	// DNSServers is the list of DNS servers to add to the build container's /etc/resolv.conf
+	DNSServers []string
+	// DNSOptions is the list of DNS
+	DNSOptions []string
 	// MemorySwap limits the amount of memory and swap together.
 	MemorySwap int64
 	// LabelOpts is the a slice of fields of an SELinux context, given in "field:pair" format, or "disable".
@@ -312,11 +346,10 @@ type BuilderOptions struct {
 	// needs to be pulled and the image name alone can not be resolved to a
 	// reference to a source image.  No separator is implicitly added.
 	Registry string
-	// Transport is a value which is prepended to the image's name, if it
-	// needs to be pulled and the image name alone, or the image name and
-	// the registry together, can not be resolved to a reference to a
-	// source image.  No separator is implicitly added.
-	Transport string
+	// BlobDirectory is the name of a directory in which we'll attempt
+	// to store copies of layer blobs that we pull down, if any.  It should
+	// already exist.
+	BlobDirectory string
 	// Mount signals to NewBuilder() that the container should be mounted
 	// immediately.
 	Mount bool

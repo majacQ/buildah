@@ -5,38 +5,48 @@ import (
 	"os"
 
 	buildahcli "github.com/containers/buildah/pkg/cli"
-	"github.com/containers/buildah/pkg/parse"
 	"github.com/pkg/errors"
-	"github.com/urfave/cli"
+	"github.com/spf13/cobra"
 )
 
-var (
-	mountDescription = "Mounts a working container's root filesystem for manipulation"
-	mountFlags       = []cli.Flag{
-		cli.BoolFlag{
-			Name:  "notruncate",
-			Usage: "do not truncate output",
+func init() {
+	var (
+		mountDescription = `buildah mount
+  mounts a working container's root filesystem for manipulation.
+
+  Note:  In rootless mode you need to first execute buildah unshare, to put you
+  into the usernamespace. Afterwards you can buildah mount the container and
+  view/modify the content in the containers root file system.
+`
+		noTruncate bool
+	)
+	mountCommand := &cobra.Command{
+		Use:   "mount",
+		Short: "Mount a working container's root filesystem",
+		Long:  mountDescription,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return mountCmd(cmd, args, noTruncate)
 		},
-	}
-	mountCommand = cli.Command{
-		Name:                   "mount",
-		Usage:                  "Mount a working container's root filesystem",
-		Description:            mountDescription,
-		Action:                 mountCmd,
-		ArgsUsage:              "[CONTAINER-NAME-OR-ID [...]]",
-		Flags:                  sortFlags(mountFlags),
-		SkipArgReorder:         true,
-		UseShortOptionHandling: true,
-	}
-)
+		Example: `buildah mount
+  buildah mount containerID
+  buildah mount containerID1 containerID2
 
-func mountCmd(c *cli.Context) error {
-	args := c.Args()
+  In rootless mode you must use buildah unshare first.
+  buildah unshare
+  buildah mount containerID
+`,
+	}
+	mountCommand.SetUsageTemplate(UsageTemplate())
+
+	flags := mountCommand.Flags()
+	flags.SetInterspersed(false)
+	flags.BoolVar(&noTruncate, "notruncate", false, "do not truncate output")
+	rootCmd.AddCommand(mountCommand)
+}
+
+func mountCmd(c *cobra.Command, args []string, noTruncate bool) error {
 
 	if err := buildahcli.VerifyFlagsArgsOrder(args); err != nil {
-		return err
-	}
-	if err := parse.ValidateFlags(c, mountFlags); err != nil {
 		return err
 	}
 
@@ -44,10 +54,18 @@ func mountCmd(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	truncate := !c.Bool("notruncate")
+	truncate := !noTruncate
 
 	var lastError error
 	if len(args) > 0 {
+		// Do not allow to mount a graphdriver that is not vfs if we are creating the userns as part
+		// of the mount command.
+		// Differently, allow the mount if we are already in a userns, as the mount point will still
+		// be accessible once "buildah mount" exits.
+		if os.Geteuid() != 0 && store.GraphDriverName() != "vfs" {
+			return fmt.Errorf("cannot mount using driver %s in rootless mode. You need to run it in a `buildah unshare` session", store.GraphDriverName())
+		}
+
 		for _, name := range args {
 			builder, err := openBuilder(getContext(), store, name)
 			if err != nil {
