@@ -2606,7 +2606,11 @@ EOF
   run cmp url1  url2
   [[ "$status" -ne 0 ]]
 
+  <<<<<<< release-1.17
+  # The first rounds of builds should all be different from each other, as a sanith thing.
+  =======
   # The first rounds of builds should all be different from each other, as a sanity thing.
+  >>>>>>> release-1.22
   run cmp copy1 prev1
   [[ "$status" -ne 0 ]]
   run cmp copy1 add1
@@ -2631,6 +2635,8 @@ EOF
   run cmp tar1 url1
   [[ "$status" -ne 0 ]]
 }
+  <<<<<<< release-1.17
+  =======
 
 @test "bud-terminal" {
   run_buildah bud ${TESTSDIR}/bud/terminal
@@ -3273,3 +3279,4 @@ _EOF
   run_buildah 125 bud --signature-policy ${TESTSDIR}/policy.json  -t secretreq -f ${TESTSDIR}/bud/run-mounts/Dockerfile.secret-required ${TESTSDIR}/bud/run-mounts
   expect_output --substring "secret required but no secret with id mysecret found"
 }
+  >>>>>>> release-1.22

@@ -25,8 +25,13 @@
 %global shortcommit    %(c=%{commit}; echo ${c:0:7})
 
 Name:           buildah
+  <<<<<<< release-1.17
+# Bump version in buildah.go too
+Version:        1.17.2
+  =======
 # Bump version in define/types.go too
 Version:        1.22.5
+  >>>>>>> release-1.22
 Release:        1.git%{shortcommit}%{?dist}
 Summary:        A command line tool used to creating OCI Images
 License:        ASL 2.0
@@ -100,6 +105,17 @@ make DESTDIR=%{buildroot} PREFIX=%{_prefix} install install.completions
 %{_datadir}/bash-completion/completions/*
 
 %changelog
+  <<<<<<< release-1.17
+* Mon Jun 21 2021 Nalin Dahyabhai <nalin@redhat.com> 1.17.2-1
+- chroot: fix environment value leakage to intermediate processes
+  (CVE-2021-3602)
+
+* Mon Nov 16 2020 Nalin Dahyabhai <nalin@redhat.com> 1.17.1-1
+- copier.Get(): ignore ENOTSUP/ENOSYS when listing xattrs
+- copier: try to force loading of nsswitch modules before chroot()
+- ADD: handle --chown on URLs
+- imagebuildah: cache should take image format into account
+  =======
 * Tue Sep 20 2022 Nalin Dahyabhai <nalin@redhat.com> 1.22.5-1
 - run: add container gid to additional groups
 - run: do not set the inheritable capabilities
@@ -525,6 +541,7 @@ make DESTDIR=%{buildroot} PREFIX=%{_prefix} install install.completions
 - Use osusergo build tag for static build
 - imagebuildah: cache should take image format into account
 - Bump to v1.18.0-dev
+  >>>>>>> release-1.22
 
 * Thu Oct 29, 2020 Tom Sweeney <tsweeney@redhat.com> 1.17.0-1
 - Handle cases where other tools mount/unmount containers

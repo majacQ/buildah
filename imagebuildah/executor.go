@@ -375,12 +375,15 @@ func (b *Executor) waitForStage(ctx context.Context, name string, stages imagebu
 
 // getImageTypeAndHistoryAndDiffIDs returns the manifest type, history, and diff IDs list of imageID.
 func (b *Executor) getImageTypeAndHistoryAndDiffIDs(ctx context.Context, imageID string) (string, []v1.History, []digest.Digest, error) {
+  <<<<<<< release-1.17
+  =======
 	b.imageInfoLock.Lock()
 	imageInfo, ok := b.imageInfoCache[imageID]
 	b.imageInfoLock.Unlock()
 	if ok {
 		return imageInfo.manifestType, imageInfo.history, imageInfo.diffIDs, imageInfo.err
 	}
+  >>>>>>> release-1.22
 	imageRef, err := is.Transport.ParseStoreReference(b.store, "@"+imageID)
 	if err != nil {
 		return "", nil, nil, errors.Wrapf(err, "error getting image reference %q", imageID)
@@ -393,6 +396,16 @@ func (b *Executor) getImageTypeAndHistoryAndDiffIDs(ctx context.Context, imageID
 	oci, err := ref.OCIConfig(ctx)
 	if err != nil {
 		return "", nil, nil, errors.Wrapf(err, "error getting possibly-converted OCI config of image %q", imageID)
+  <<<<<<< release-1.17
+	}
+	manifestBytes, manifestFormat, err := ref.Manifest(ctx)
+	if err != nil {
+		return "", nil, nil, errors.Wrapf(err, "error getting manifest of image %q", imageID)
+	}
+	if manifestFormat == "" && len(manifestBytes) > 0 {
+		manifestFormat = manifest.GuessMIMEType(manifestBytes)
+	}
+  =======
 	}
 	manifestBytes, manifestFormat, err := ref.Manifest(ctx)
 	if err != nil {
@@ -409,6 +422,7 @@ func (b *Executor) getImageTypeAndHistoryAndDiffIDs(ctx context.Context, imageID
 		err:          nil,
 	}
 	b.imageInfoLock.Unlock()
+  >>>>>>> release-1.22
 	return manifestFormat, oci.History, oci.RootFS.DiffIDs, nil
 }
 

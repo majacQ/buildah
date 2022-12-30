@@ -426,6 +426,16 @@
     imagebuildah: cache should take image format into account
     Bump to v1.18.0-dev
 
+## v1.17.2 (2021-06-21)
+    chroot: fix environment value leakage to intermediate processes
+    (CVE-2021-3602)
+
+## v1.17.1 (2020-11-16)
+    copier.Get(): ignore ENOTSUP/ENOSYS when listing xattrs
+    copier: try to force loading of nsswitch modules before chroot()
+    ADD: handle --chown on URLs
+    imagebuildah: cache should take image format into account
+
 ## v1.17.0 (2020-10-29)
     Handle cases where other tools mount/unmount containers
     overlay.MountReadOnly: support RO overlay mounts

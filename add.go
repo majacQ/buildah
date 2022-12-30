@@ -76,7 +76,11 @@ func sourceIsRemote(source string) bool {
 }
 
 // getURL writes a tar archive containing the named content
+  <<<<<<< release-1.17
+func getURL(src string, chown *idtools.IDPair, mountpoint, renameTarget string, writer io.Writer) error {
+  =======
 func getURL(src string, chown *idtools.IDPair, mountpoint, renameTarget string, writer io.Writer, chmod *os.FileMode) error {
+  >>>>>>> release-1.22
 	url, err := url.Parse(src)
 	if err != nil {
 		return err
@@ -133,17 +137,24 @@ func getURL(src string, chown *idtools.IDPair, mountpoint, renameTarget string, 
 		uid = chown.UID
 		gid = chown.GID
 	}
+  <<<<<<< release-1.17
+  =======
 	var mode int64 = 0600
 	if chmod != nil {
 		mode = int64(*chmod)
 	}
+  >>>>>>> release-1.22
 	hdr := tar.Header{
 		Typeflag: tar.TypeReg,
 		Name:     name,
 		Size:     size,
 		Uid:      uid,
 		Gid:      gid,
+  <<<<<<< release-1.17
+		Mode:     0600,
+  =======
 		Mode:     mode,
+  >>>>>>> release-1.22
 		ModTime:  date,
 	}
 	err = tw.WriteHeader(&hdr)
@@ -377,7 +388,11 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 			pipeReader, pipeWriter := io.Pipe()
 			wg.Add(1)
 			go func() {
+  <<<<<<< release-1.17
+				getErr = getURL(src, chownFiles, mountPoint, renameTarget, pipeWriter)
+  =======
 				getErr = getURL(src, chownFiles, mountPoint, renameTarget, pipeWriter, chmodDirsFiles)
+  >>>>>>> release-1.22
 				pipeWriter.Close()
 				wg.Done()
 			}()
@@ -393,6 +408,14 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 					_, putErr = io.Copy(hasher, pipeReader)
 				} else {
 					putOptions := copier.PutOptions{
+  <<<<<<< release-1.17
+						UIDMap:     destUIDMap,
+						GIDMap:     destGIDMap,
+						ChownDirs:  nil,
+						ChmodDirs:  nil,
+						ChownFiles: nil,
+						ChmodFiles: nil,
+  =======
 						UIDMap:        destUIDMap,
 						GIDMap:        destGIDMap,
 						ChownDirs:     nil,
@@ -400,6 +423,7 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 						ChownFiles:    nil,
 						ChmodFiles:    nil,
 						IgnoreDevices: userns.RunningInUserNS(),
+  >>>>>>> release-1.22
 					}
 					putErr = copier.Put(extractDirectory, extractDirectory, putOptions, io.TeeReader(pipeReader, hasher))
 				}

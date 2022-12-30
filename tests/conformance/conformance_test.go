@@ -1988,6 +1988,8 @@ var internalTestCases = []testCase{
 		contextDir:   "dockerignore/integration3",
 		shouldFailAt: 4,
 		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
+  <<<<<<< release-1.17
+  =======
 	},
 
 	{
@@ -2023,8 +2025,8 @@ var internalTestCases = []testCase{
 		contextDir: "copyblahblub",
 		dockerfile: "Dockerfile3",
 		fsSkip:     []string{"(dir):var:mtime"},
+  >>>>>>> release-1.22
 	},
-
 	{
 		name: "multi-stage-through-base",
 		dockerfileContents: strings.Join([]string{
@@ -2851,6 +2853,8 @@ var internalTestCases = []testCase{
 		contextDir:   "dockerignore/allowlist/alternating-other",
 		shouldFailAt: 7,
 		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
+  <<<<<<< release-1.17
+  =======
 	},
 
 	{
@@ -2858,6 +2862,7 @@ var internalTestCases = []testCase{
 		contextDir:    "tar-g",
 		withoutDocker: true,
 		fsSkip:        []string{"(dir):tmp:mtime"},
+  >>>>>>> release-1.22
 	},
 
 	{

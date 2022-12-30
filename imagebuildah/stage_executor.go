@@ -1249,6 +1249,11 @@ func (s *StageExecutor) intermediateImageExists(ctx context.Context, currNode *p
 		if manifestType != s.executor.outputFormat {
 			continue
 		}
+		// If this candidate isn't of the type that we're building, then it may have lost
+		// some format-specific information that a building-without-cache run wouldn't lose.
+		if manifestType != s.executor.outputFormat {
+			continue
+		}
 		// children + currNode is the point of the Dockerfile we are currently at.
 		if s.historyAndDiffIDsMatch(baseHistory, baseDiffIDs, currNode, history, diffIDs, addedContentDigest, buildAddsLayer) {
 			return image.ID, nil

@@ -28,7 +28,11 @@ const (
 	Package = define.Package
 	// Version for the Package.  Bump version in contrib/rpm/buildah.spec
 	// too.
+  <<<<<<< release-1.17
+	Version = "1.17.2"
+  =======
 	Version = define.Version
+  >>>>>>> release-1.22
 	// The value we use to identify what type of information, currently a
 	// serialized Builder structure, we are using as per-container state.
 	// This should only be changed when we make incompatible changes to
