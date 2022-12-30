@@ -944,8 +944,8 @@ func setupRootlessNetwork(pid int) (teardown func(), err error) {
 	}
 
 	return func() {
-		cmd.Process.Kill()
-		cmd.Wait()
+		cmd.Process.Kill() // nolint:errcheck
+		cmd.Wait()         // nolint:errcheck
 	}, nil
 }
 
@@ -1131,15 +1131,19 @@ func runCopyStdio(stdio *sync.WaitGroup, copyPipes bool, stdioPipe [][]int, copy
 		if err := setNonblock(rfd, readDesc[rfd], true); err != nil {
 			return
 		}
-		setNonblock(wfd, writeDesc[wfd], false)
+		setNonblock(wfd, writeDesc[wfd], false) // nolint:errcheck
 	}
 
+  <<<<<<< release-1.8
+	setNonblock(stdioPipe[unix.Stdin][1], writeDesc[stdioPipe[unix.Stdin][1]], true) // nolint:errcheck
+  =======
 	if copyPipes {
 		setNonblock(stdioPipe[unix.Stdin][1], writeDesc[stdioPipe[unix.Stdin][1]], true)
 	}
 
 	runCopyStdioPassData(stdio, copyPipes, stdioPipe, copyConsole, consoleListener, finishCopy, finishedCopy, spec, relayMap, relayBuffer, readDesc, writeDesc)
 }
+  >>>>>>> release-1.9-rhel
 
 func runCopyStdioPassData(stdio *sync.WaitGroup, copyPipes bool, stdioPipe [][]int, copyConsole bool, consoleListener *net.UnixListener, finishCopy []int, finishedCopy chan struct{}, spec *specs.Spec, relayMap map[int]int, relayBuffer map[int]*bytes.Buffer, readDesc map[int]string, writeDesc map[int]string) {
 	closeStdin := false
