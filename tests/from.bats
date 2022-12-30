@@ -49,6 +49,7 @@ load helpers
   expect_output "$(basename ${elsewhere})-working-container"
 }
 
+  <<<<<<< release-v1.14
 @test "from-authenticate-cert" {
 
   mkdir -p ${TESTDIR}/auth
@@ -124,6 +125,8 @@ load helpers
 #  buildah rmi -f $(buildah images -q)
 }
 
+  =======
+  >>>>>>> release-1.16
 @test "from-tagged-image" {
   # Github #396: Make sure the container name starts with the correct image even when it's tagged.
   run_buildah from --pull=false --signature-policy ${TESTSDIR}/policy.json scratch
@@ -166,6 +169,9 @@ load helpers
 @test "from the following transports: docker-archive, oci-archive, and dir" {
   _prefetch alpine
   run_buildah from --quiet --pull=true --signature-policy ${TESTSDIR}/policy.json alpine
+  run_buildah rm $output
+
+  run_buildah from --quiet --pull=true --signature-policy ${TESTSDIR}/policy.json docker:latest
   run_buildah rm $output
 
   run_buildah push --signature-policy ${TESTSDIR}/policy.json alpine docker-archive:${TESTDIR}/docker-alp.tar:alpine
@@ -327,7 +333,7 @@ load helpers
   _prefetch alpine
   run_buildah from --quiet --add-host=localhost:127.0.0.1 --pull --signature-policy ${TESTSDIR}/policy.json alpine
   cid=$output
-  run_buildah run $cid -- cat /etc/hosts
+  run_buildah run --net=container $cid -- cat /etc/hosts
   expect_output --substring "127.0.0.1 +localhost"
 }
 
@@ -388,4 +394,49 @@ load helpers
   run_buildah '?' rmi busybox
   run_buildah from --signature-policy ${TESTSDIR}/policy.json --quiet docker.io/busybox
   expect_output "busybox-working-container"
+}
+
+@test "from encrypted local image" {
+  _prefetch busybox
+  mkdir ${TESTDIR}/tmp
+  openssl genrsa -out ${TESTDIR}/tmp/mykey.pem 1024
+  openssl genrsa -out ${TESTDIR}/tmp/mykey2.pem 1024
+  openssl rsa -in ${TESTDIR}/tmp/mykey.pem -pubout > ${TESTDIR}/tmp/mykey.pub
+  run_buildah push --signature-policy ${TESTSDIR}/policy.json --tls-verify=false --creds testuser:testpassword --encryption-key jwe:${TESTDIR}/tmp/mykey.pub busybox oci:${TESTDIR}/tmp/busybox_enc
+
+  # Try encrypted image without key should fail
+  run_buildah 125 from oci:${TESTDIR}/tmp/busybox_enc
+  expect_output --substring "Error decrypting layer .* missing private key needed for decryption"
+
+  # Try encrypted image with wrong key should fail
+  run_buildah 125 from --decryption-key ${TESTDIR}/tmp/mykey2.pem oci:${TESTDIR}/tmp/busybox_enc
+  expect_output --substring "Error decrypting layer .* no suitable key unwrapper found or none of the private keys could be used for decryption"
+
+  # Providing the right key should succeed
+  run_buildah from  --decryption-key ${TESTDIR}/tmp/mykey.pem oci:${TESTDIR}/tmp/busybox_enc
+
+  rm -rf ${TESTDIR}/tmp
+}
+
+@test "from encrypted registry image" {
+  _prefetch busybox
+  mkdir ${TESTDIR}/tmp
+  openssl genrsa -out ${TESTDIR}/tmp/mykey.pem 1024
+  openssl genrsa -out ${TESTDIR}/tmp/mykey2.pem 1024
+  openssl rsa -in ${TESTDIR}/tmp/mykey.pem -pubout > ${TESTDIR}/tmp/mykey.pub
+  run_buildah push --signature-policy ${TESTSDIR}/policy.json --tls-verify=false --creds testuser:testpassword --encryption-key jwe:${TESTDIR}/tmp/mykey.pub busybox docker://localhost:5000/buildah/busybox_encrypted:latest
+
+  # Try encrypted image without key should fail
+  run_buildah 125 from --tls-verify=false --creds testuser:testpassword docker://localhost:5000/buildah/busybox_encrypted:latest
+  expect_output --substring "Error decrypting layer .* missing private key needed for decryption"
+
+  # Try encrypted image with wrong key should fail
+  run_buildah 125 from --tls-verify=false --creds testuser:testpassword --decryption-key ${TESTDIR}/tmp/mykey2.pem docker://localhost:5000/buildah/busybox_encrypted:latest
+  expect_output --substring "Error decrypting layer .* no suitable key unwrapper found or none of the private keys could be used for decryption"
+
+  # Providing the right key should succeed
+  run_buildah from --tls-verify=false --creds testuser:testpassword --decryption-key ${TESTDIR}/tmp/mykey.pem docker://localhost:5000/buildah/busybox_encrypted:latest
+  run_buildah rmi localhost:5000/buildah/busybox_encrypted:latest
+
+  rm -rf ${TESTDIR}/tmp
 }

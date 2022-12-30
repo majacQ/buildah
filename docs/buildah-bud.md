@@ -178,6 +178,10 @@ The [username[:password]] to use to authenticate with the registry if required.
 If one or both values are not supplied, a command line prompt will appear and the
 value can be entered.  The password is entered without echo.
 
+**--decryption-key** *key[:passphrase]*
+
+The [key[:passphrase]] to be used for decryption of images. Key can point to keys and/or certificates. Decryption will be tried with all keys. If the key is protected by a passphrase, it is required to be passed in the argument and omitted otherwise.
+
 **--device**=*device*
 
 Add a host device or devices under a directory to the container. The format is `<device-on-host>[:<device-on-container>][:<permissions>]` (e.g. --device=/dev/sdc:/dev/xvdc:rwm)
@@ -265,14 +269,22 @@ another process.
 Controls what type of isolation is used for running processes as part of `RUN`
 instructions.  Recognized types include *oci* (OCI-compatible runtime, the
 default), *rootless* (OCI-compatible runtime invoked using a modified
-configuration, with *--no-new-keyring* added to its *create*
-invocation, with network and UTS namespaces disabled, and IPC, PID,
-and user namespaces enabled; the default for unprivileged users), and
-*chroot* (an internal wrapper that leans more toward chroot(1) than
-container technology).
+configuration, with *--no-new-keyring* added to its *create* invocation,
+reusing the host's network and UTS namespaces, and creating private IPC, PID,
+mount, and user namespaces; the default for unprivileged users), and *chroot*
+(an internal wrapper that leans more toward chroot(1) than container
+technology, reusing the host's control group, network, IPC, and PID namespaces,
+and creating private mount and UTS namespaces, and creating user namespaces
+only when they're required for ID mapping).
 
 Note: You can also override the default isolation type by setting the
 BUILDAH\_ISOLATION environment variable.  `export BUILDAH_ISOLATION=oci`
+
+**--jobs** *N*
+
+Run up to N concurrent stages in parallel.  If the number of jobs is greater than 1,
+stdin will be read from /dev/null.  If 0 is specified, then there is
+no limit in the number of jobs that run in parallel.
 
 **--label** *label*
 
@@ -317,19 +329,27 @@ The format of `LIMIT` is `<number>[<unit>]`. Unit can be `b` (bytes),
 `k` (kilobytes), `m` (megabytes), or `g` (gigabytes). If you don't specify a
 unit, `b` is used. Set LIMIT to `-1` to enable unlimited swap.
 
-**--net** *how*
-**--network** *how*
+**--network**, **--net**=*mode*
 
 Sets the configuration for network namespaces when handling `RUN` instructions.
-The configured value can be "" (the empty string) or "container" to indicate
-that a new network namespace should be created, or it can be "host" to indicate
-that the network namespace in which `buildah` itself is being run should be
-reused, or it can be the path to a network namespace which is already in use by
-another process.
+
+Valid _mode_ values are:
+
+- **none**: no networking;
+- **host**: use the Podman host network stack. Note: the host mode gives the container full access to local system services such as D-bus and is therefore considered insecure;
+- **ns:**_path_: path to a network namespace to join;
+- `private`: create a new namespace for the container (default)
 
 **--no-cache**
 
 Do not use existing cached images for the container build. Build from the start with a new set of cached layers.
+
+**--timestamp** *seconds*
+
+Set the create timestamp to seconds since epoch to allow for deterministic builds (defaults to current time).
+By default, the created timestamp is changed and written into the image manifest with every commit,
+causing the image's sha256 hash to be different even if the sources are exactly the same otherwise.
+When --timestamp is set, the created timestamp is always set to the time specified and therefore not changed, allowing the image's sha256 to remain the same. All files committed to the layers of the image will be created with the timestamp.
 
 **--os**="OS"
 
@@ -338,7 +358,7 @@ Set the OS of the image to the provided value instead of using the current opera
 **--pid** *how*
 
 Sets the configuration for PID namespaces when handling `RUN` instructions.
-The configured value can be "" (the empty string) or "container" to indicate
+The configured value can be "" (the empty string) or "private" to indicate
 that a new PID namespace should be created, or it can be "host" to indicate
 that the PID namespace in which `buildah` itself is being run should be reused,
 or it can be the path to a PID namespace which is already in use by another
@@ -473,7 +493,7 @@ include:
 **--userns** *how*
 
 Sets the configuration for user namespaces when handling `RUN` instructions.
-The configured value can be "" (the empty string) or "container" to indicate
+The configured value can be "" (the empty string) or "private" to indicate
 that a new user namespace should be created, it can be "host" to indicate that
 the user namespace in which `buildah` itself is being run should be reused, or
 it can be the path to an user namespace which is already in use by another
@@ -486,7 +506,7 @@ filesystem level, on the working container's contents.
 Commands run when handling `RUN` instructions will default to being run in
 their own user namespaces, configured using the UID and GID maps.
 
-Entries in this map take the form of one or more triples of a starting
+Entries in this map take the form of one or more colon-separated triples of a starting
 in-container UID, a corresponding starting host-level UID, and the number of
 consecutive IDs which the map entry represents.
 
@@ -507,7 +527,7 @@ filesystem level, on the working container's contents.
 Commands run when handling `RUN` instructions will default to being run in
 their own user namespaces, configured using the UID and GID maps.
 
-Entries in this map take the form of one or more triples of a starting
+Entries in this map take the form of one or more colon-separated triples of a starting
 in-container GID, a corresponding starting host-level GID, and the number of
 consecutive IDs which the map entry represents.
 
@@ -556,7 +576,7 @@ process.
 
    Create a bind mount. If you specify, ` -v /HOST-DIR:/CONTAINER-DIR`, Buildah
    bind mounts `/HOST-DIR` in the host to `/CONTAINER-DIR` in the Buildah
-   container. The `OPTIONS` are a comma delimited list and can be:
+   container. The `OPTIONS` are a comma delimited list and can be: <sup>[[1]](#Footnote1)</sup>
 
    * [rw|ro]
    * [z|Z|O]
@@ -600,7 +620,6 @@ Only the current container can use a private volume.
 
   Note:
 
-     - Overlay mounts are not currently supported in rootless mode.
      - The `O` flag is not allowed to be specified with the `Z` or `z` flags. Content mounted into the container is labeled with the private label.
        On SELinux systems, labels in the source directory needs to be readable by the container label. If not, SELinux container separation must be disabled for the container to work.
      - Modification of the directory volume mounted into the container with an overlay mount can cause unexpected failures.  It is recommended that you do not modify the directory until the container finishes running.
@@ -619,7 +638,7 @@ be specified only for bind mounted volumes and not for internal volumes or
 named volumes. For mount propagation to work on the source mount point (the mount point
 where source dir is mounted on) it has to have the right propagation properties. For
 shared volumes, the source mount point has to be shared. And for slave volumes,
-the source mount has to be either shared or slave.
+the source mount has to be either shared or slave. <sup>[[1]](#Footnote1)</sup>
 
 Use `df <source-dir>` to determine the source mount and then use
 `findmnt -o TARGET,PROPAGATION <source-mount-dir>` to determine propagation
@@ -627,7 +646,7 @@ properties of source mount, if `findmnt` utility is not available, the source mo
 can be determined by looking at the mount entry in `/proc/self/mountinfo`. Look
 at `optional fields` and see if any propagaion properties are specified.
 `shared:X` means the mount is `shared`, `master:X` means the mount is `slave` and if
-nothing is there that means the mount is `private`.
+nothing is there that means the mount is `private`. <sup>[[1]](#Footnote1)</sup>
 
 To change propagation properties of a mount point use the `mount` command. For
 example, to bind mount the source directory `/foo` do
@@ -647,6 +666,8 @@ buildah bud -f Containerfile .
 cat ~/Dockerfile | buildah bud -f - .
 
 buildah bud -f Dockerfile.simple -f Dockerfile.notsosimple .
+
+buildah bud --timestamp=$(date '+%s') -t imageName .
 
 buildah bud -t imageName .
 
@@ -712,6 +733,52 @@ are stored while pulling and pushing images.  Defaults to '/var/tmp'.
 
 ## Files
 
+### `.dockerignore`
+
+If the file .dockerignore exists in the context directory, `buildah bud` reads
+its contents. Buildah uses the content to exclude files and directories from
+the context directory, when executing COPY and ADD directives in the
+Containerfile/Dockerfile
+
+Users can specify a series of Unix shell globals in a .dockerignore file to
+identify files/directories to exclude.
+
+Buildah supports a special wildcard string `**` which matches any number of
+directories (including zero). For example, **/*.go will exclude all files that
+end with .go that are found in all directories.
+
+Example .dockerignore file:
+
+```
+# exclude this content for image
+*/*.c
+**/output*
+src
+```
+
+`*/*.c`
+Excludes files and directories whose names ends with .c in any top level subdirectory. For example, the source file include/rootless.c.
+
+`**/output*`
+Excludes files and directories starting with `output` from any directory.
+
+`src`
+Excludes files named src and the directory src as well as any content in it.
+
+Lines starting with ! (exclamation mark) can be used to make exceptions to
+exclusions. The following is an example .dockerignore file that uses this
+mechanism:
+```
+*.doc
+!Help.doc
+```
+
+Exclude all doc files except Help.doc from the image.
+
+This functionality is compatible with the handling of .dockerignore files described here:
+
+https://docs.docker.com/engine/reference/builder/#dockerignore-file
+
 **registries.conf** (`/etc/containers/registries.conf`)
 
 registries.conf is the configuration file which specifies which container registries should be consulted when completing image names which do not include a registry or domain portion.
@@ -722,3 +789,6 @@ Signature policy file.  This defines the trust policy for container images.  Con
 
 ## SEE ALSO
 buildah(1), CPP(1), buildah-login(1), docker-login(1), namespaces(7), pid\_namespaces(7), containers-policy.json(5), containers-registries.conf(5), user\_namespaces(7), crun(1), runc(8)
+
+## FOOTNOTES
+<a name="Footnote1">1</a>: The Buildah project is committed to inclusivity, a core value of open source. The `master` and `slave` mount propagation terminology used here is problematic and divisive, and should be changed. However, these terms are currently used within the Linux kernel and must be used as-is at this time. When the kernel maintainers rectify this usage, Buildah will follow suit immediately.

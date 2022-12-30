@@ -168,6 +168,10 @@ The [username[:password]] to use to authenticate with the registry if required.
 If one or both values are not supplied, a command line prompt will appear and the
 value can be entered.  The password is entered without echo.
 
+**--decryption-key** *key[:passphrase]*
+
+The [key[:passphrase]] to be used for decryption of images. Key can point to keys and/or certificates. Decryption will be tried with all keys. If the key is protected by a passphrase, it is required to be passed in the argument and omitted otherwise.
+
 **--device**=*device*
 
 Add a host device or devices under a directory to the container. The format is `<device-on-host>[:<device-on-container>][:<permissions>]` (e.g. --device=/dev/sdc:/dev/xvdc:rwm)
@@ -213,11 +217,13 @@ another process.
 Controls what type of isolation is used for running processes under `buildah
 run`.  Recognized types include *oci* (OCI-compatible runtime, the default),
 *rootless* (OCI-compatible runtime invoked using a modified
-configuration, with *--no-new-keyring* added to its *create*
-invocation, with network and UTS namespaces disabled, and IPC, PID,
-and user namespaces enabled; the default for unprivileged users), and
-*chroot* (an internal wrapper that leans more toward chroot(1) than
-container technology).
+configuration, with *--no-new-keyring* added to its *create* invocation,
+reusing the host's network and UTS namespaces, and creating private IPC, PID,
+mount, and user namespaces; the default for unprivileged users), and *chroot*
+(an internal wrapper that leans more toward chroot(1) than container
+technology, reusing the host's control group, network, IPC, and PID namespaces,
+and creating private mount and UTS namespaces, and creating user namespaces
+only when they're required for ID mapping).
 
 Note: You can also override the default isolation type by setting the
 BUILDAH\_ISOLATION environment variable.  `export BUILDAH_ISOLATION=oci`
@@ -433,7 +439,7 @@ process.
 
    Create a bind mount. If you specify, ` -v /HOST-DIR:/CONTAINER-DIR`, Buildah
    bind mounts `/HOST-DIR` in the host to `/CONTAINER-DIR` in the Buildah
-   container. The `OPTIONS` are a comma delimited list and can be:
+   container. The `OPTIONS` are a comma delimited list and can be: <sup>[[1]](#Footnote1)</sup>
 
    * [rw|ro]
    * [z|Z|O]
@@ -477,7 +483,6 @@ Only the current container can use a private volume.
 
   Note:
 
-     - Overlay mounts are not currently supported in rootless mode.
      - The `O` flag is not allowed to be specified with the `Z` or `z` flags. Content mounted into the container is labeled with the private label.
        On SELinux systems, labels in the source directory needs to be readable by the container label. If not, SELinux container separation must be disabled for the container to work.
      - Modification of the directory volume mounted into the container with an overlay mount can cause unexpected failures.  It is recommended that you do not modify the directory until the container finishes running.
@@ -496,7 +501,7 @@ be specified only for bind mounted volumes and not for internal volumes or
 named volumes. For mount propagation to work on the source mount point (the mount point
 where source dir is mounted on) it has to have the right propagation properties. For
 shared volumes, the source mount point has to be shared. And for slave volumes,
-the source mount has to be either shared or slave.
+the source mount has to be either shared or slave. <sup>[[1]](#Footnote1)</sup>
 
 Use `df <source-dir>` to determine the source mount and then use
 `findmnt -o TARGET,PROPAGATION <source-mount-dir>` to determine propagation
@@ -504,7 +509,7 @@ properties of source mount, if `findmnt` utility is not available, the source mo
 can be determined by looking at the mount entry in `/proc/self/mountinfo`. Look
 at `optional fields` and see if any propagaion properties are specified.
 `shared:X` means the mount is `shared`, `master:X` means the mount is `slave` and if
-nothing is there that means the mount is `private`.
+nothing is there that means the mount is `private`. <sup>[[1]](#Footnote1)</sup>
 
 To change propagation properties of a mount point use the `mount` command. For
 example, to bind mount the source directory `/foo` do
@@ -572,3 +577,6 @@ Signature policy file.  This defines the trust policy for container images.  Con
 
 ## SEE ALSO
 buildah(1), buildah-pull(1), buildah-login(1), docker-login(1), namespaces(7), pid\_namespaces(7), containers-policy.json(5), containers-registries.conf(5), user\_namespaces(7)
+
+## FOOTNOTES
+<a name="Footnote1">1</a>: The Buildah project is committed to inclusivity, a core value of open source. The `master` and `slave` mount propagation terminology used here is problematic and divisive, and should be changed. However, these terms are currently used within the Linux kernel and must be used as-is at this time. When the kernel maintainers rectify this usage, Buildah will follow suit immediately.

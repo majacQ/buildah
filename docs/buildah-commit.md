@@ -10,8 +10,9 @@ buildah\-commit - Create an image from a working container.
 Writes a new image using the specified container's read-write layer and if it
 is based on an image, the layers of that image.  If *image* does not begin
 with a registry name component, `localhost` will be added to the name.  If
-*image* is not provided, the values for the `REPOSITORY` and `TAG` values of
-the created image will each be set to `<none>`.
+*image* is not provided, the image will have no name.  When an image has no
+name, the `buildah images` command will display `<none>` in the `REPOSITORY` and
+`TAG` columns.
 
 ## RETURN VALUE
 The image ID of the image that was created.  On error, 1 is returned and errno is returned.
@@ -61,7 +62,7 @@ Write the image ID to the file.
 When writing the output image, suppress progress output.
 
 **--rm**
-Remove the container and its content after committing it to an image.
+Remove the working container and its contents after creating the image.
 Default leaves the container and its content in place.
 
 **--sign-by** *fingerprint*
@@ -76,13 +77,12 @@ Squash all of the new image's layers (including those inherited from a base imag
 
 Require HTTPS and verify certificates when talking to container registries (defaults to true)
 
-**--omit-timestamp** *bool-value*
+**--timestamp** *secconds*
 
-Set the create timestamp to epoch 0 to allow for deterministic builds (defaults to false).
+Set the create timestamp to seconds since epoch to allow for deterministic builds (defaults to current time).
 By default, the created timestamp is changed and written into the image manifest with every commit,
 causing the image's sha256 hash to be different even if the sources are exactly the same otherwise.
-When --omit-timestamp is set to true, the created timestamp is always set to the epoch and therefore not
-changed, allowing the image's sha256 to remain the same.
+When --timestamp is set, the created timestamp is always set to the time specified and therefore not changed, allowing the image's sha256 to remain the same. All files committed to the layers of the image will be created with the timestamp.
 
 ## EXAMPLE
 
@@ -91,6 +91,9 @@ This example saves an image based on the container.
 
 This example saves an image named newImageName based on the container.
  `buildah commit --rm containerID newImageName`
+
+This example saves an image with no name, removes the working container, and creates a new container using the image's ID.
+ `buildah from $(buildah commit --rm containerID)`
 
 This example saves an image based on the container disabling compression.
  `buildah commit --disable-compression containerID`
@@ -106,6 +109,9 @@ This example commits the container to the image on the local registry using cred
 
 This example commits the container to the image on the local registry using credentials from the /tmp/auths/myauths.json file and certificates for authentication.
  `buildah commit --authfile /tmp/auths/myauths.json --cert-dir ~/auth  --tls-verify=true --creds=username:password containerID docker://localhost:5000/imageName`
+
+This example saves an image based on the container, but stores dates based on epoch time.
+`buildah commit --timestamp=0 containerID newImageName`
 
 ## ENVIRONMENT
 
@@ -137,4 +143,4 @@ registries.conf is the configuration file which specifies which container regist
 Signature policy file.  This defines the trust policy for container images.  Controls which container registries can be used for image, and whether or not the tool should trust the images.
 
 ## SEE ALSO
-buildah(1), containers-policy.json(5), containers-registries.conf(5)
+buildah(1), buildah-images(1), containers-policy.json(5), containers-registries.conf(5)

@@ -11,6 +11,7 @@ import (
 	buildahcli "github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
+	"github.com/containers/common/pkg/auth"
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/transports"
 	"github.com/containers/image/v5/transports/alltransports"
@@ -33,6 +34,8 @@ type pushOptions struct {
 	signaturePolicy    string
 	signBy             string
 	tlsVerify          bool
+	encryptionKeys     []string
+	encryptLayers      []int
 }
 
 func init() {
@@ -65,7 +68,7 @@ func init() {
 
 	flags := pushCommand.Flags()
 	flags.SetInterspersed(false)
-	flags.StringVar(&opts.authfile, "authfile", buildahcli.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
+	flags.StringVar(&opts.authfile, "authfile", auth.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
 	flags.StringVar(&opts.blobCache, "blob-cache", "", "assume image blobs in the specified directory will be available for pushing")
 	flags.StringVar(&opts.certDir, "cert-dir", "", "use certificates at the specified path to access the registry")
 	flags.StringVar(&opts.creds, "creds", "", "use `[username[:password]]` for accessing the registry")
@@ -76,6 +79,9 @@ func init() {
 	flags.BoolVarP(&opts.removeSignatures, "remove-signatures", "", false, "don't copy signatures when pushing image")
 	flags.StringVar(&opts.signBy, "sign-by", "", "sign the image using a GPG key with the specified `FINGERPRINT`")
 	flags.StringVar(&opts.signaturePolicy, "signature-policy", "", "`pathname` of signature policy file (not usually used)")
+	flags.StringSliceVar(&opts.encryptionKeys, "encryption-key", nil, "key with the encryption protocol to use needed to encrypt the image (e.g. jwe:/path/to/key.pem)")
+	flags.IntSliceVar(&opts.encryptLayers, "encrypt-layer", nil, "layers to encrypt, 0-indexed layer indices with support for negative indexing (e.g. 0 is the first layer, -1 is the last layer). If not defined, will encrypt all layers if encryption-key flag is specified")
+
 	if err := flags.MarkHidden("signature-policy"); err != nil {
 		panic(fmt.Sprintf("error marking signature-policy as hidden: %v", err))
 	}
@@ -93,7 +99,7 @@ func pushCmd(c *cobra.Command, args []string, iopts pushOptions) error {
 	if err := buildahcli.VerifyFlagsArgsOrder(args); err != nil {
 		return err
 	}
-	if err := buildahcli.CheckAuthFile(iopts.authfile); err != nil {
+	if err := auth.CheckAuthFile(iopts.authfile); err != nil {
 		return err
 	}
 
@@ -164,6 +170,11 @@ func pushCmd(c *cobra.Command, args []string, iopts pushOptions) error {
 		}
 	}
 
+	encConfig, encLayers, err := getEncryptConfig(iopts.encryptionKeys, iopts.encryptLayers)
+	if err != nil {
+		return errors.Wrapf(err, "unable to obtain encryption config")
+	}
+
 	options := buildah.PushOptions{
 		Compression:         compress,
 		ManifestType:        manifestType,
@@ -175,6 +186,8 @@ func pushCmd(c *cobra.Command, args []string, iopts pushOptions) error {
 		SignBy:              iopts.signBy,
 		MaxRetries:          maxPullPushRetries,
 		RetryDelay:          pullPushRetryDelay,
+		OciEncryptConfig:    encConfig,
+		OciEncryptLayers:    encLayers,
 	}
 	if !iopts.quiet {
 		options.ReportWriter = os.Stderr

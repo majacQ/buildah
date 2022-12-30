@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/containers/buildah/manifests"
-	buildahcli "github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
+	"github.com/containers/common/pkg/auth"
 	cp "github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/transports"
@@ -192,7 +192,7 @@ func init() {
 	flags = manifestPushCommand.Flags()
 	flags.BoolVar(&manifestPushOpts.purge, "purge", false, "remove the manifest list if push succeeds")
 	flags.BoolVar(&manifestPushOpts.all, "all", false, "also push the images in the list")
-	flags.StringVar(&manifestPushOpts.authfile, "authfile", buildahcli.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
+	flags.StringVar(&manifestPushOpts.authfile, "authfile", auth.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
 	flags.StringVar(&manifestPushOpts.certDir, "cert-dir", "", "use certificates at the specified path to access the registry")
 	flags.StringVar(&manifestPushOpts.creds, "creds", "", "use `[username[:password]]` for accessing the registry")
 	flags.StringVar(&manifestPushOpts.digestfile, "digestfile", "", "after copying the image, write the digest of the resulting digest to the file")
@@ -558,13 +558,16 @@ func manifestInspectCmd(c *cobra.Command, args []string, opts manifestInspectOpt
 
 	refs, err := util.ResolveNameToReferences(store, systemContext, imageSpec)
 	if err != nil {
-		return errors.Wrapf(err, "error resolving image names")
+		logrus.Debugf("error parsing reference to image %q: %v", imageSpec, err)
 	}
 
 	if ref, _, err := util.FindImage(store, "", systemContext, imageSpec); err == nil {
 		refs = append(refs, ref)
 	} else if ref, err := alltransports.ParseImageName(imageSpec); err == nil {
 		refs = append(refs, ref)
+	}
+	if len(refs) == 0 {
+		return errors.Errorf("error locating images with names %v", imageSpec)
 	}
 
 	ctx := getContext()
@@ -620,7 +623,7 @@ func manifestInspectCmd(c *cobra.Command, args []string, opts manifestInspectOpt
 }
 
 func manifestPushCmd(c *cobra.Command, args []string, opts manifestPushOpts) error {
-	if err := buildahcli.CheckAuthFile(opts.authfile); err != nil {
+	if err := auth.CheckAuthFile(opts.authfile); err != nil {
 		return err
 	}
 

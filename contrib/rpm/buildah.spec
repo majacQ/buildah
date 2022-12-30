@@ -26,7 +26,11 @@
 
 Name:           buildah
 # Bump version in buildah.go too
+  <<<<<<< release-v1.14
 Version:        1.14.11
+  =======
+Version:        1.16.8
+  >>>>>>> release-1.16
 Release:        1.git%{shortcommit}%{?dist}
 Summary:        A command line tool used to creating OCI Images
 License:        ASL 2.0
@@ -99,6 +103,7 @@ make DESTDIR=%{buildroot} PREFIX=%{_prefix} install install.completions
 %{_datadir}/bash-completion/completions/*
 
 %changelog
+  <<<<<<< release-v1.14
 * Mon Aug 10, 2020 Tom Sweeney <tsweeney@redhat.com> 1.14.11-1
 - Make imagebuildah.BuildOptions.Architecture/OS optional
 - blobcache: avoid an unnecessary NewImage()
@@ -108,6 +113,225 @@ make DESTDIR=%{buildroot} PREFIX=%{_prefix} install install.completions
 
 * Mon May 11, 2020 Dan Walsh <dwalsh@redhat.com> 1.14.9-1
 - Bump github.com/containers/common to 0.8.4
+  =======
+* Mon Jun 21 2021 Nalin Dahyabhai <nalin@redhat.com> 1.16.8-1
+- Move away from using docker.io
+- Turn off PRIOR_UBUNTU Test until vm is updated
+- chroot: fix environment value leakage to intermediate processes
+  (CVE-2021-3602)
+
+* Mon Nov 30 2020 Nalin Dahyabhai <nalin@redhat.com> 1.16.7-1
+- Bump github.com/containers/common from v0.21.0 to v0.22.0.
+- Bump github.com/containers/image from v5.5.2 to v5.6.0.
+- Bump github.com/containers/storage from 1.23.3 to v1.23.5.
+
+* Mon Nov 16 2020 Nalin Dahyabhai <nalin@redhat.com> 1.16.6-1
+- copier.Get(): ignore ENOTSUP/ENOSYS when listing xattrs
+- ADD: handle --chown on URLs
+- imagebuildah: cache should take image format into account
+- copier: try to force loading of nsswitch modules before chroot()
+- overlay: use fusermount for rootless umounts
+- overlay: fix umount
+- copier: put: ignore Typeflag="g"
+
+* Wed Oct 21 2020 Nalin Dahyabhai <nalin@redhat.com> 1.16.5-1
+- copier.copierHandlerPut: don't check length when there are errors
+- CI: run gating tasks with a lot more memory
+- Run(): ignore containers.conf's environment configuration
+- bump(github.com/openshift/imagebuilder) to v1.1.8
+- ADD and COPY: descend into excluded directories, sometimes
+- copier: add more context to a couple of error messages
+- copier: check an error earlier
+- Set directory ownership when copied with ID mapping
+
+* Thu Oct 1 2020 Nalin Dahyabhai <nalin@redhat.com> 1.16.4-1
+- ADD: only expand archives at the right time
+
+* Wed Sep 30 2020 Nalin Dahyabhai <nalin@redhat.com> 1.16.3-1
+- Lint: Use same linters as podman
+- add: preserve ownerships and permissions on ADDed archives
+- chroot: fix handling of errno seccomp rules
+- git-validation.sh: set the base for comparison to v1.16.0
+- chroot: create bind mount targets 0755 instead of 0700
+
+* Mon Sep 21 2020 Nalin Dahyabhai <nalin@redhat.com> 1.16.2-1
+- Add(): fix handling of relative paths with no ContextDir
+
+* Thu Sep 10, 2020 Tom Sweeney <tsweeney@redhat.com> 1.16.1-1
+- CI: use release-1.16 as the basis for validation tests
+- copier.Get(): hard link targets shouldn't be relative paths
+
+* Thu Sep 3, 2020 Tom Sweeney <tsweeney@redhat.com> 1.16.0-1
+- fix build on 32bit arches
+- containerImageRef.NewImageSource(): don't always force timestamps
+- Add fuse module warning to image readme
+- Heed our retry delay option values when retrying commit/pull/push
+- Switch to containers/common for seccomp
+- Use --timestamp rather then --omit-timestamp
+- docs: remove outdated notice
+- docs: remove outdated notice
+- build-using-dockerfile: add a hidden --log-rusage flag
+- build(deps): bump github.com/containers/image/v5 from 5.5.1 to 5.5.2
+- Discard ReportWriter if user sets options.Quiet
+- build(deps): bump github.com/containers/common from 0.19.0 to 0.20.3
+- Fix ownership of content copied using COPY --from
+- newTarDigester: zero out timestamps in tar headers
+- Update nix pin with `make nixpkgs`
+- bud.bats: correct .dockerignore integration tests
+- Use pipes for copying
+- run: include stdout in error message
+- run: use the correct error for errors.Wrapf
+- copier: un-export internal types
+- copier: add Mkdir()
+- in_podman: don't get tripped up by $CIRRUS_CHANGE_TITLE
+- docs/buildah-commit.md: tweak some wording, add a --rm example
+- imagebuildah: don’t blank out destination names when COPYing
+- Replace retry functions with common/pkg/retry
+- StageExecutor.historyMatches: compare timestamps using .Equal
+- Update vendor of containers/common
+- Fix errors found in coverity scan
+- Change namespace handling flags to better match podman commands
+- conformance testing: ignore buildah.BuilderIdentityAnnotation labels
+- Vendor in containers/storage v1.23.0
+- Add buildah.IsContainer interface
+- Avoid feeding run_buildah to pipe
+- fix(buildahimage): add xz dependency in buildah image
+- Bump github.com/containers/common from 0.15.2 to 0.18.0
+- Howto for rootless image building from OpenShift
+- Add --omit-timestamp flag to buildah bud
+- Update nix pin with `make nixpkgs`
+- Shutdown storage on failures
+- Handle COPY --from when an argument is used
+- Bump github.com/seccomp/containers-golang from 0.5.0 to 0.6.0
+- Cirrus: Use newly built VM images
+- Bump github.com/opencontainers/runc from 1.0.0-rc91 to 1.0.0-rc92
+- Enhance the .dockerignore man pages
+- conformance: add a test for COPY from subdirectory
+- fix- manifest inspct
+- Add documentation for .dockerignore
+- Add BuilderIdentityAnnotation to identify buildah version
+- Add quay.io/containers/buildah image to README.md
+- Update buildahimages readme
+- fix spelling mistake in "info" command result display
+- Don't bind /etc/host and /etc/resolv.conf if network is not present
+- blobcache: avoid an unnecessary NewImage()
+- Build static binary with `buildGoModule`
+- copier: split StripSetidBits into StripSetuidBit/StripSetgidBit/StripStickyBit
+- tarFilterer: handle multiple archives
+- Fix a race we hit during conformance tests
+- Rework conformance testing
+- Update 02-registries-repositories.md
+- test-unit: invoke cmd/buildah tests with --flags
+- parse: fix a type mismatch in a test
+- Fix compilation of tests/testreport/testreport
+- build.sh: log the version of Go that we're using
+- test-unit: increase the test timeout to 40/45 minutes
+- Add the "copier" package
+- Fix & add notes regarding problematic language in codebase
+- Add dependency on github.com/stretchr/testify/require
+- CompositeDigester: add the ability to filter tar streams
+- BATS tests: make more robust
+- vendor golang.org/x/text@v0.3.3
+- Switch golang 1.12 to golang 1.13
+- imagebuildah: wait for stages that might not have even started yet
+- chroot, run: not fail on bind mounts from /sys
+- chroot: do not use setgroups if it is blocked
+- Set engine env from containers.conf
+- imagebuildah: return the right stage's image as the "final" image
+- Fix a help string
+- Deduplicate environment variables
+- switch containers/libpod to containers/podman
+- Bump github.com/containers/ocicrypt from 1.0.2 to 1.0.3
+- Bump github.com/opencontainers/selinux from 1.5.2 to 1.6.0
+- Mask out /sys/dev to prevent information leak
+- linux: skip errors from the runtime kill
+- Mask over the /sys/fs/selinux in mask branch
+- Add VFS additional image store to container
+- tests: add auth tests
+- Allow "readonly" as alias to "ro" in mount options
+- Ignore OS X specific consistency mount option
+- Bump github.com/onsi/ginkgo from 1.13.0 to 1.14.0
+- Bump github.com/containers/common from 0.14.0 to 0.15.2
+- Rootless Buildah should default to IsolationOCIRootless
+- imagebuildah: fix inheriting multi-stage builds
+- Make imagebuildah.BuildOptions.Architecture/OS optional
+- Make imagebuildah.BuildOptions.Jobs optional
+- Resolve a possible race in imagebuildah.Executor.startStage()
+- Switch scripts to use containers.conf
+- Bump openshift/imagebuilder to v1.1.6
+- Bump go.etcd.io/bbolt from 1.3.4 to 1.3.5
+- buildah, bud: support --jobs=N for parallel execution
+- executor: refactor build code inside new function
+- Add bud regression tests
+- Cirrus: Fix missing htpasswd in registry img
+- docs: clarify the 'triples' format
+- CHANGELOG.md: Fix markdown formatting
+- Add nix derivation for static builds
+- Bump to v1.16.0-dev
+- add version centos7 for compatible
+
+* Wed Jun 17, 2020 Tom Sweeney <tsweeney@redhat.com> 1.15.0-1
+- Bump github.com/containers/common from 0.12.0 to 0.13.1
+- Bump github.com/containers/storage from 1.20.1 to 1.20.2
+- Bump github.com/seccomp/containers-golang from 0.4.1 to 0.5.0
+- Bump github.com/stretchr/testify from 1.6.0 to 1.6.1
+- Bump github.com/opencontainers/runc from 1.0.0-rc9 to 1.0.0-rc90
+- Add CVE-2020-10696 to CHANGELOG.md and changelog.txt
+- Bump github.com/stretchr/testify from 1.5.1 to 1.6.0
+- Bump github.com/onsi/ginkgo from 1.12.2 to 1.12.3
+- Vendor in containers/common v0.12.0
+- fix lighttpd example
+- Vendor in new go.etcd.io/bbolt
+- Bump github.com/onsi/ginkgo from 1.12.1 to 1.12.2
+- Bump imagebuilder for ARG fix
+- Bump github.com/containers/common from 0.11.2 to 0.11.4
+- remove dependency on openshift struct
+- Warn on unset build arguments
+- vendor: update seccomp/containers-golang to v0.4.1
+- Ammended docs
+- Updated docs
+- clean up comments
+- update exit code for tests
+- Implement commit for encryption
+- implementation of encrypt/decrypt push/pull/bud/from
+- fix resolve docker image name as transport
+- Bump github.com/opencontainers/go-digest from 1.0.0-rc1 to 1.0.0
+- Bump github.com/onsi/ginkgo from 1.12.0 to 1.12.1
+- Bump github.com/containers/storage from 1.19.1 to 1.19.2
+- Bump github.com/containers/image/v5 from 5.4.3 to 5.4.4
+- Add preliminary profiling support to the CLI
+- Bump github.com/containers/common from 0.10.0 to 0.11.2
+- Evaluate symlinks in build context directory
+- fix error info about get signatures for containerImageSource
+- Add Security Policy
+- Cirrus: Fixes from review feedback
+- Bump github.com/containers/storage from 1.19.0 to 1.19.1
+- Bump github.com/sirupsen/logrus from 1.5.0 to 1.6.0
+- imagebuildah: stages shouldn't count as their base images
+- Update containers/common v0.10.0
+- Bump github.com/fsouza/go-dockerclient from 1.6.4 to 1.6.5
+- Add registry to buildahimage Dockerfiles
+- Cirrus: Use pre-installed VM packages + F32
+- Cirrus: Re-enable all distro versions
+- Cirrus: Update to F31 + Use cache images
+- golangci-lint: Disable gosimple
+- Lower number of golangci-lint threads
+- Fix permissions on containers.conf
+- Don't force tests to use runc
+- Bump github.com/containers/common from 0.9.1 to 0.9.5
+- Return exit code from failed containers
+- Bump github.com/containers/storage from 1.18.2 to 1.19.0
+- Bump github.com/containers/common from 0.9.0 to 0.9.1
+- cgroup_manager should be under [engine]
+- Use c/common/pkg/auth in login/logout
+- Cirrus: Temporarily disable Ubuntu 19 testing
+- Add containers.conf to stablebyhand build
+- Update gitignore to exclude test Dockerfiles
+- Bump github.com/fsouza/go-dockerclient from 1.6.3 to 1.6.4
+- Bump github.com/containers/common from 0.8.1 to 0.9.0
+- Bump back to v1.15.0-dev
+- Remove warning for systemd inside of container
+  >>>>>>> release-1.16
 
 * Thu Apr 9, 2020 Tom Sweeney <tsweeney@redhat.com> 1.14.8-1
 - Run (make vendor)

@@ -34,11 +34,29 @@ then
             export GITVALIDATE_TIP="$CIRRUS_CHANGE_IN_REPO"
             echo "Linting & Validating from $GITVALIDATE_EPOCH to $GITVALIDATE_TIP"
             # TODO: This will fail if PR HEAD != upstream branch head
-            showrun make lint LINTFLAGS="--deadline 20m --color=always"
+            showrun make lint LINTFLAGS="--deadline=20m --color=always"
             showrun make validate
             ;;
         unit)
             showrun make test-unit
+            ;;
+        conformance)
+            case "$OS_RELEASE_ID" in
+            fedora)
+                warn "Installing moby-engine"
+                dnf install -y moby-engine
+                systemctl enable --now docker
+                ;;
+            ubuntu)
+                warn "Installing docker.io"
+                $LONG_APTGET install docker.io
+                systemctl enable --now docker
+                ;;
+            *)
+                bad_os_id_ver
+                ;;
+            esac
+            showrun make test-conformance
             ;;
         integration)
             showrun make test-integration

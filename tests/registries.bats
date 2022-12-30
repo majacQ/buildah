@@ -8,11 +8,11 @@ load helpers
     image2=$2
 
     # Create a container by specifying the image with one name.
-    run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json $image1
+    run_buildah --retry from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json $image1
     cid1=$output
 
     # Create a container by specifying the image with another name.
-    run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json $image2
+    run_buildah --retry from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json $image2
     cid2=$output
 
     # Get their image IDs.  They should be the same one.
@@ -26,7 +26,7 @@ load helpers
     run_buildah rmi -a
   }
   # Test with pairs of short and fully-qualified names that should be the same image.
-  registrypair busybox        docker.io/busybox
-  registrypair busybox        docker.io/library/busybox
-  registrypair fedora-minimal registry.fedoraproject.org/fedora-minimal
+  registrypair busybox           docker.io/busybox
+  registrypair busybox           docker.io/library/busybox
+  registrypair fedora-minimal:32 registry.fedoraproject.org/fedora-minimal:32
 }

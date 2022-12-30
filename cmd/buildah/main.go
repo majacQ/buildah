@@ -4,11 +4,18 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+  <<<<<<< release-v1.14
+  =======
+	"runtime"
+	"runtime/pprof"
+	"strings"
+  >>>>>>> release-1.16
 	"syscall"
 
 	"github.com/containers/buildah"
 	"github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
+	"github.com/containers/common/pkg/config"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/unshare"
 	ispecs "github.com/opencontainers/image-spec/specs-go"
@@ -30,6 +37,9 @@ type globalFlags struct {
 	StorageOpts       []string
 	UserNSUID         []string
 	UserNSGID         []string
+	CPUProfile        string
+	cpuProfileFile    *os.File
+	MemoryProfile     string
 }
 
 var rootCmd = &cobra.Command{
@@ -85,12 +95,20 @@ func init() {
 	rootCmd.PersistentFlags().StringSliceVar(&globalFlagResults.UserNSGID, "userns-gid-map", []string{}, "default `ctrID:hostID:length` GID mapping to use")
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.DefaultMountsFile, "default-mounts-file", "", "path to default mounts file")
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.LogLevel, logLevel, "error", `The log level to be used. Either "debug", "info", "warn" or "error".`)
+	rootCmd.PersistentFlags().StringVar(&globalFlagResults.CPUProfile, "cpu-profile", "", "`file` to write CPU profile")
+	rootCmd.PersistentFlags().StringVar(&globalFlagResults.MemoryProfile, "memory-profile", "", "`file` to write memory profile")
 
+	if err := rootCmd.PersistentFlags().MarkHidden("cpu-profile"); err != nil {
+		logrus.Fatalf("unable to mark cpu-profile flag as hidden: %v", err)
+	}
 	if err := rootCmd.PersistentFlags().MarkHidden("debug"); err != nil {
 		logrus.Fatalf("unable to mark debug flag as hidden: %v", err)
 	}
 	if err := rootCmd.PersistentFlags().MarkHidden("default-mounts-file"); err != nil {
 		logrus.Fatalf("unable to mark default-mounts-file flag as hidden: %v", err)
+	}
+	if err := rootCmd.PersistentFlags().MarkHidden("memory-profile"); err != nil {
+		logrus.Fatalf("unable to mark memory-profile flag as hidden: %v", err)
 	}
 }
 
@@ -120,16 +138,73 @@ func before(cmd *cobra.Command) error {
 		return nil
 	}
 	unshare.MaybeReexecUsingUserNamespace(false)
+	if globalFlagResults.CPUProfile != "" {
+		globalFlagResults.cpuProfileFile, err = os.Create(globalFlagResults.CPUProfile)
+		if err != nil {
+			logrus.Fatalf("could not create CPU profile %s: %v", globalFlagResults.CPUProfile, err)
+		}
+		if err = pprof.StartCPUProfile(globalFlagResults.cpuProfileFile); err != nil {
+			logrus.Fatalf("error starting CPU profiling: %v", err)
+		}
+	}
+
+	defaultContainerConfig, err := config.Default()
+	if err != nil {
+		return err
+	}
+
+	for _, env := range defaultContainerConfig.Engine.Env {
+		splitEnv := strings.SplitN(env, "=", 2)
+		if len(splitEnv) != 2 {
+			return fmt.Errorf("invalid environment variable %q from containers.conf, valid configuration is KEY=value pair", env)
+		}
+		// skip if the env is already defined
+		if _, ok := os.LookupEnv(splitEnv[0]); ok {
+			logrus.Debugf("environment variable %q is already defined, skip the settings from containers.conf", splitEnv[0])
+			continue
+		}
+		if err := os.Setenv(splitEnv[0], splitEnv[1]); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-func after(cmd *cobra.Command) error {
+func shutdownStore(cmd *cobra.Command) error {
 	if needToShutdownStore {
 		store, err := getStore(cmd)
 		if err != nil {
 			return err
 		}
-		_, _ = store.Shutdown(false)
+		logrus.Debugf("shutting down the store")
+		needToShutdownStore = false
+		if _, err = store.Shutdown(false); err != nil {
+			logrus.Warnf("failed to shutdown storage: %q", err)
+		}
+	}
+	return nil
+}
+
+func after(cmd *cobra.Command) error {
+	if err := shutdownStore(cmd); err != nil {
+		return err
+	}
+
+	if globalFlagResults.CPUProfile != "" {
+		pprof.StopCPUProfile()
+		globalFlagResults.cpuProfileFile.Close()
+	}
+	if globalFlagResults.MemoryProfile != "" {
+		memoryProfileFile, err := os.Create(globalFlagResults.MemoryProfile)
+		if err != nil {
+			logrus.Fatalf("could not create memory profile %s: %v", globalFlagResults.MemoryProfile, err)
+		}
+		defer memoryProfileFile.Close()
+		runtime.GC()
+		if err := pprof.Lookup("heap").WriteTo(memoryProfileFile, 1); err != nil {
+			logrus.Fatalf("could not write memory profile %s: %v", globalFlagResults.MemoryProfile, err)
+		}
 	}
 	return nil
 }
@@ -150,6 +225,12 @@ func main() {
 				exitCode = w.ExitStatus()
 			}
 		}
+  <<<<<<< release-v1.14
+  =======
+		if err := shutdownStore(rootCmd); err != nil {
+			logrus.Warnf("failed to shutdown storage: %q", err)
+		}
+  >>>>>>> release-1.16
 		os.Exit(exitCode)
 	}
 }

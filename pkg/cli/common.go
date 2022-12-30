@@ -13,6 +13,7 @@ import (
 	"github.com/containers/buildah"
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
+	"github.com/containers/common/pkg/auth"
 	"github.com/containers/common/pkg/config"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
@@ -56,6 +57,7 @@ type BudResults struct {
 	Creds               string
 	DisableCompression  bool
 	DisableContentTrust bool
+	DecryptionKeys      []string
 	File                []string
 	Format              string
 	Iidfile             string
@@ -63,6 +65,7 @@ type BudResults struct {
 	Logfile             string
 	Loglevel            int
 	NoCache             bool
+	Timestamp           int64
 	OS                  string
 	Platform            string
 	Pull                bool
@@ -78,6 +81,8 @@ type BudResults struct {
 	Tag                 []string
 	Target              string
 	TLSVerify           bool
+	Jobs                int
+	LogRusage           bool
 }
 
 // FromAndBugResults represents the results for common flags
@@ -123,17 +128,12 @@ func GetUserNSFlags(flags *UserNSResults) pflag.FlagSet {
 // GetNameSpaceFlags returns the common flags for a namespace menu
 func GetNameSpaceFlags(flags *NameSpaceResults) pflag.FlagSet {
 	fs := pflag.FlagSet{}
-	fs.StringVar(&flags.IPC, string(specs.IPCNamespace), "", "'container', `path` of IPC namespace to join, or 'host'")
-	fs.StringVar(&flags.Network, string(specs.NetworkNamespace), "", "'container', `path` of network namespace to join, or 'host'")
-	// TODO How do we alias net and network?
-	fs.StringVar(&flags.Network, "net", "", "'container', `path` of network namespace to join, or 'host'")
-	if err := fs.MarkHidden("net"); err != nil {
-		panic(fmt.Sprintf("error marking net flag as hidden: %v", err))
-	}
+	fs.StringVar(&flags.IPC, string(specs.IPCNamespace), "", "'private', `path` of IPC namespace to join, or 'host'")
+	fs.StringVar(&flags.Network, string(specs.NetworkNamespace), "", "'private', 'none', 'ns:path' of network namespace to join, or 'host'")
 	fs.StringVar(&flags.CNIConfigDir, "cni-config-dir", util.DefaultCNIConfigDir, "`directory` of CNI configuration files")
 	fs.StringVar(&flags.CNIPlugInPath, "cni-plugin-path", util.DefaultCNIPluginPath, "`path` of CNI network plugins")
-	fs.StringVar(&flags.PID, string(specs.PIDNamespace), "", "container, `path` of PID namespace to join, or 'host'")
-	fs.StringVar(&flags.UTS, string(specs.UTSNamespace), "", "container, :`path` of UTS namespace to join, or 'host'")
+	fs.StringVar(&flags.PID, string(specs.PIDNamespace), "", "private, `path` of PID namespace to join, or 'host'")
+	fs.StringVar(&flags.UTS, string(specs.UTSNamespace), "", "private, :`path` of UTS namespace to join, or 'host'")
 	return fs
 }
 
@@ -150,7 +150,7 @@ func GetBudFlags(flags *BudResults) pflag.FlagSet {
 	fs := pflag.FlagSet{}
 	fs.StringVar(&flags.Arch, "arch", runtime.GOARCH, "set the ARCH of the image to the provided value instead of the architecture of the host")
 	fs.StringArrayVar(&flags.Annotation, "annotation", []string{}, "Set metadata for an image (default [])")
-	fs.StringVar(&flags.Authfile, "authfile", GetDefaultAuthFile(), "path of the authentication file.")
+	fs.StringVar(&flags.Authfile, "authfile", auth.GetDefaultAuthFile(), "path of the authentication file.")
 	fs.StringArrayVar(&flags.BuildArg, "build-arg", []string{}, "`argument=value` to supply to the builder")
 	fs.StringVar(&flags.CacheFrom, "cache-from", "", "Images to utilise as potential cache sources. The build process does not currently support caching so this is a NOOP.")
 	fs.StringVar(&flags.CertDir, "cert-dir", "", "use certificates at the specified path to access the registry")
@@ -165,6 +165,7 @@ func GetBudFlags(flags *BudResults) pflag.FlagSet {
 	fs.BoolVar(&flags.NoCache, "no-cache", false, "Do not use existing cached images for the container build. Build from the start with a new set of cached layers.")
 	fs.StringVar(&flags.Logfile, "logfile", "", "log to `file` instead of stdout/stderr")
 	fs.IntVar(&flags.Loglevel, "loglevel", 0, "adjust logging level (range from -2 to 3)")
+	fs.Int64Var(&flags.Timestamp, "timestamp", 0, "set created timestamp to the specified epoch seconds to allow for deterministic builds, defaults to current time")
 	fs.StringVar(&flags.OS, "os", runtime.GOOS, "set the OS to the provided value instead of the current operating system of the host")
 	fs.StringVar(&flags.Platform, "platform", parse.DefaultPlatform(), "set the OS/ARCH to the provided value instead of the current operating system and architecture of the host (for example `linux/arm`)")
 	fs.BoolVar(&flags.Pull, "pull", true, "pull the image from the registry if newer or not present in store, if false, only pull the image if not present")
@@ -180,6 +181,11 @@ func GetBudFlags(flags *BudResults) pflag.FlagSet {
 	fs.StringArrayVarP(&flags.Tag, "tag", "t", []string{}, "tagged `name` to apply to the built image")
 	fs.StringVar(&flags.Target, "target", "", "set the target build stage to build")
 	fs.BoolVar(&flags.TLSVerify, "tls-verify", true, "require HTTPS and verify certificates when accessing the registry")
+	fs.IntVar(&flags.Jobs, "jobs", 1, "how many stages to run in parallel")
+	fs.BoolVar(&flags.LogRusage, "log-rusage", false, "log resource usage at each build step")
+	if err := fs.MarkHidden("log-rusage"); err != nil {
+		panic(fmt.Sprintf("error marking the log-rusage flag as hidden: %v", err))
+	}
 	return fs
 }
 
@@ -279,16 +285,11 @@ func VerifyFlagsArgsOrder(args []string) error {
 	return nil
 }
 
-func GetDefaultAuthFile() string {
-	return os.Getenv("REGISTRY_AUTH_FILE")
-}
-
-func CheckAuthFile(authfile string) error {
-	if authfile == "" {
-		return nil
+// aliasFlags is a function to handle backwards compatibility with old flags
+func AliasFlags(f *pflag.FlagSet, name string) pflag.NormalizedName {
+	switch name {
+	case "net":
+		name = "network"
 	}
-	if _, err := os.Stat(authfile); err != nil {
-		return errors.Wrapf(err, "error checking authfile path %s", authfile)
-	}
-	return nil
+	return pflag.NormalizedName(name)
 }

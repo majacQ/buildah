@@ -8,6 +8,7 @@ import (
 	"github.com/containers/buildah"
 	buildahcli "github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
+	"github.com/containers/common/pkg/auth"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -24,6 +25,7 @@ type pullOptions struct {
 	quiet            bool
 	removeSignatures bool
 	tlsVerify        bool
+	decryptionKeys   []string
 }
 
 func init() {
@@ -51,12 +53,13 @@ func init() {
 	flags := pullCommand.Flags()
 	flags.SetInterspersed(false)
 	flags.BoolVarP(&opts.allTags, "all-tags", "a", false, "download all tagged images in the repository")
-	flags.StringVar(&opts.authfile, "authfile", buildahcli.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
+	flags.StringVar(&opts.authfile, "authfile", auth.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
 	flags.StringVar(&opts.blobCache, "blob-cache", "", "store copies of pulled image blobs in the specified directory")
 	flags.StringVar(&opts.certDir, "cert-dir", "", "use certificates at the specified path to access the registry")
 	flags.StringVar(&opts.creds, "creds", "", "use `[username[:password]]` for accessing the registry")
 	flags.BoolVarP(&opts.removeSignatures, "remove-signatures", "", false, "don't copy signatures when pulling image")
 	flags.StringVar(&opts.signaturePolicy, "signature-policy", "", "`pathname` of signature policy file (not usually used)")
+	flags.StringSliceVar(&opts.decryptionKeys, "decryption-key", nil, "key needed to decrypt the image")
 	if err := flags.MarkHidden("signature-policy"); err != nil {
 		panic(fmt.Sprintf("error marking signature-policy as hidden: %v", err))
 	}
@@ -87,7 +90,7 @@ func pullCmd(c *cobra.Command, args []string, iopts pullOptions) error {
 	if len(args) > 1 {
 		return errors.Errorf("too many arguments specified")
 	}
-	if err := buildahcli.CheckAuthFile(iopts.authfile); err != nil {
+	if err := auth.CheckAuthFile(iopts.authfile); err != nil {
 		return err
 	}
 
@@ -101,6 +104,11 @@ func pullCmd(c *cobra.Command, args []string, iopts pullOptions) error {
 		return err
 	}
 
+	decConfig, err := getDecryptConfig(iopts.decryptionKeys)
+	if err != nil {
+		return errors.Wrapf(err, "unable to obtain decrypt config")
+	}
+
 	options := buildah.PullOptions{
 		SignaturePolicyPath: iopts.signaturePolicy,
 		Store:               store,
@@ -111,6 +119,7 @@ func pullCmd(c *cobra.Command, args []string, iopts pullOptions) error {
 		RemoveSignatures:    iopts.removeSignatures,
 		MaxRetries:          maxPullPushRetries,
 		RetryDelay:          pullPushRetryDelay,
+		OciDecryptConfig:    decConfig,
 	}
 
 	if iopts.quiet {

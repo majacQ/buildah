@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/containers/buildah/imagebuildah"
 	buildahcli "github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
+	"github.com/containers/common/pkg/auth"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -66,6 +68,7 @@ func init() {
 	// BUD is a all common flags
 	budFlags := buildahcli.GetBudFlags(&budFlagResults)
 	budFlags.StringVar(&budFlagResults.Runtime, "runtime", util.Runtime(), "`path` to an alternate runtime. Use BUILDAH_RUNTIME environment variable to override.")
+	flags.StringSliceVar(&budFlagResults.DecryptionKeys, "decryption-key", nil, "key needed to decrypt the image")
 
 	layerFlags := buildahcli.GetLayerFlags(&layerFlagsResults)
 	fromAndBudFlags, err := buildahcli.GetFromAndBudFlags(&fromAndBudResults, &userNSResults, &namespaceResults)
@@ -77,6 +80,7 @@ func init() {
 	flags.AddFlagSet(&budFlags)
 	flags.AddFlagSet(&layerFlags)
 	flags.AddFlagSet(&fromAndBudFlags)
+	flags.SetNormalizeFunc(buildahcli.AliasFlags)
 
 	rootCmd.AddCommand(budCommand)
 }
@@ -103,7 +107,7 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 			tags = tags[1:]
 		}
 	}
-	if err := buildahcli.CheckAuthFile(iopts.BudResults.Authfile); err != nil {
+	if err := auth.CheckAuthFile(iopts.BudResults.Authfile); err != nil {
 		return err
 	}
 
@@ -188,6 +192,11 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		}
 		dockerfiles = append(dockerfiles, dockerFile)
 		contextDir = filepath.Dir(dockerFile)
+	}
+
+	contextDir, err = filepath.EvalSymlinks(contextDir)
+	if err != nil {
+		return errors.Wrapf(err, "error evaluating symlinks in build context path")
 	}
 
 	var stdin, stdout, stderr, reporter *os.File
@@ -284,9 +293,21 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 
 	defaultsMountFile, _ := c.PersistentFlags().GetString("defaults-mount-file")
 
-	os, arch, err := parse.PlatformFromOptions(c)
+	imageOS, arch, err := parse.PlatformFromOptions(c)
 	if err != nil {
 		return err
+	}
+
+	decConfig, err := getDecryptConfig(iopts.DecryptionKeys)
+	if err != nil {
+		return errors.Wrapf(err, "unable to obtain decrypt config")
+	}
+
+	if iopts.Jobs > 1 {
+		stdin, err = os.OpenFile("/dev/null", os.O_RDONLY|os.O_CREATE, 0000)
+		if err != nil {
+			return err
+		}
 	}
 
 	options := imagebuildah.BuildOptions{
@@ -316,7 +337,7 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		MaxPullPushRetries:      maxPullPushRetries,
 		NamespaceOptions:        namespaceOptions,
 		NoCache:                 iopts.NoCache,
-		OS:                      os,
+		OS:                      imageOS,
 		Out:                     stdout,
 		Output:                  output,
 		OutputFormat:            format,
@@ -333,6 +354,13 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		SystemContext:           systemContext,
 		Target:                  iopts.Target,
 		TransientMounts:         iopts.Volumes,
+		OciDecryptConfig:        decConfig,
+		Jobs:                    &iopts.Jobs,
+		LogRusage:               iopts.LogRusage,
+	}
+	if c.Flag("timestamp").Changed {
+		timestamp := time.Unix(iopts.Timestamp, 0).UTC()
+		options.Timestamp = &timestamp
 	}
 
 	if iopts.Quiet {

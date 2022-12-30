@@ -10,6 +10,7 @@ import (
 	buildahcli "github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
+	"github.com/containers/common/pkg/auth"
 	"github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
@@ -27,6 +28,7 @@ type commitInputOptions struct {
 	format             string
 	iidfile            string
 	omitTimestamp      bool
+	timestamp          int64
 	quiet              bool
 	referenceTime      string
 	rm                 bool
@@ -34,6 +36,8 @@ type commitInputOptions struct {
 	signBy             string
 	squash             bool
 	tlsVerify          bool
+	encryptionKeys     []string
+	encryptLayers      []int
 }
 
 func init() {
@@ -56,8 +60,10 @@ func init() {
 	flags := commitCommand.Flags()
 	flags.SetInterspersed(false)
 
-	flags.StringVar(&opts.authfile, "authfile", buildahcli.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
+	flags.StringVar(&opts.authfile, "authfile", auth.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
 	flags.StringVar(&opts.blobCache, "blob-cache", "", "assume image blobs in the specified directory will be available for pushing")
+	flags.StringSliceVar(&opts.encryptionKeys, "encryption-key", nil, "key with the encryption protocol to use needed to encrypt the image (e.g. jwe:/path/to/key.pem)")
+	flags.IntSliceVar(&opts.encryptLayers, "encrypt-layer", nil, "layers to encrypt, 0-indexed layer indices with support for negative indexing (e.g. 0 is the first layer, -1 is the last layer). If not defined, will encrypt all layers if encryption-key flag is specified")
 
 	if err := flags.MarkHidden("blob-cache"); err != nil {
 		panic(fmt.Sprintf("error marking blob-cache as hidden: %v", err))
@@ -69,10 +75,14 @@ func init() {
 	flags.StringVarP(&opts.format, "format", "f", defaultFormat(), "`format` of the image manifest and metadata")
 	flags.StringVar(&opts.iidfile, "iidfile", "", "Write the image ID to the file")
 	flags.BoolVar(&opts.omitTimestamp, "omit-timestamp", false, "set created timestamp to epoch 0 to allow for deterministic builds")
+	flags.Int64Var(&opts.timestamp, "timestamp", 0, "set created timestamp to epoch seconds to allow for deterministic builds, defaults to current time")
 	flags.BoolVarP(&opts.quiet, "quiet", "q", false, "don't output progress information when writing images")
 	flags.StringVar(&opts.referenceTime, "reference-time", "", "set the timestamp on the image to match the named `file`")
 	flags.StringVar(&opts.signBy, "sign-by", "", "sign the image using a GPG key with the specified `FINGERPRINT`")
 
+	if err := flags.MarkHidden("omit-timestamp"); err != nil {
+		panic(fmt.Sprintf("error marking omit-timestamp as hidden: %v", err))
+	}
 	if err := flags.MarkHidden("reference-time"); err != nil {
 		panic(fmt.Sprintf("error marking reference-time as hidden: %v", err))
 	}
@@ -99,7 +109,7 @@ func commitCmd(c *cobra.Command, args []string, iopts commitInputOptions) error 
 	if err := buildahcli.VerifyFlagsArgsOrder(args); err != nil {
 		return err
 	}
-	if err := buildahcli.CheckAuthFile(iopts.authfile); err != nil {
+	if err := auth.CheckAuthFile(iopts.authfile); err != nil {
 		return err
 	}
 
@@ -115,15 +125,6 @@ func commitCmd(c *cobra.Command, args []string, iopts commitInputOptions) error 
 	compress := imagebuildah.Gzip
 	if iopts.disableCompression {
 		compress = imagebuildah.Uncompressed
-	}
-	timestamp := time.Now().UTC()
-	if c.Flag("reference-time").Changed {
-		referenceFile := iopts.referenceTime
-		finfo, err := os.Stat(referenceFile)
-		if err != nil {
-			return errors.Wrapf(err, "error reading timestamp of file %q", referenceFile)
-		}
-		timestamp = finfo.ModTime().UTC()
 	}
 
 	format, err := getFormat(iopts.format)
@@ -167,18 +168,49 @@ func commitCmd(c *cobra.Command, args []string, iopts commitInputOptions) error 
 	// Add builder identity information.
 	builder.SetLabel(buildah.BuilderIdentityAnnotation, buildah.Version)
 
+	encConfig, encLayers, err := getEncryptConfig(iopts.encryptionKeys, iopts.encryptLayers)
+	if err != nil {
+		return errors.Wrapf(err, "unable to obtain encryption config")
+	}
+
 	options := buildah.CommitOptions{
 		PreferredManifestType: format,
 		Compression:           compress,
 		SignaturePolicyPath:   iopts.signaturePolicy,
-		HistoryTimestamp:      &timestamp,
 		SystemContext:         systemContext,
 		IIDFile:               iopts.iidfile,
 		Squash:                iopts.squash,
 		BlobDirectory:         iopts.blobCache,
-		OmitTimestamp:         iopts.omitTimestamp,
 		SignBy:                iopts.signBy,
+		OciEncryptConfig:      encConfig,
+		OciEncryptLayers:      encLayers,
 	}
+	exclusiveFlags := 0
+	if c.Flag("reference-time").Changed {
+		exclusiveFlags++
+		referenceFile := iopts.referenceTime
+		finfo, err := os.Stat(referenceFile)
+		if err != nil {
+			return errors.Wrapf(err, "error reading timestamp of file %q", referenceFile)
+		}
+		timestamp := finfo.ModTime().UTC()
+		options.HistoryTimestamp = &timestamp
+	}
+	if c.Flag("timestamp").Changed {
+		exclusiveFlags++
+		timestamp := time.Unix(iopts.timestamp, 0).UTC()
+		options.HistoryTimestamp = &timestamp
+	}
+	if iopts.omitTimestamp {
+		exclusiveFlags++
+		timestamp := time.Unix(0, 0).UTC()
+		options.HistoryTimestamp = &timestamp
+	}
+
+	if exclusiveFlags > 1 {
+		return errors.Errorf("can not use more then one timestamp option at at time")
+	}
+
 	if !iopts.quiet {
 		options.ReportWriter = os.Stderr
 	}

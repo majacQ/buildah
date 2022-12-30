@@ -45,5 +45,52 @@ buildah copy containerID 'https://github.com/containers/buildah' '/tmp'
 
 buildah copy containerID 'passwd' 'certs.d' /etc
 
+## FILES
+
+### `.dockerignore`
+
+If the file .dockerignore exists in the context directory, `buildah copy` reads
+its contents. Buildah uses the content to exclude files and directories from
+the context directory, when copying content into the image.
+
+Users can specify a series of Unix shell globals in a .dockerignore file to
+identify files/directories to exclude.
+
+Buildah supports a special wildcard string `**` which matches any number of
+directories (including zero). For example, **/*.go will exclude all files that
+end with .go that are found in all directories.
+
+Example .dockerignore file:
+
+```
+# here are files we want to exclude
+*/*.c
+**/output*
+src
+```
+
+`*/*.c`
+Excludes files and directories whose names ends with .c in any top level subdirectory. For example, the source file include/rootless.c.
+
+`**/output*`
+Excludes files and directories starting with `output` from any directory.
+
+`src`
+Excludes files named src and the directory src as well as any content in it.
+
+Lines starting with ! (exclamation mark) can be used to make exceptions to
+exclusions. The following is an example .dockerignore file that uses this
+mechanism:
+```
+*.doc
+!Help.doc
+```
+
+Exclude all doc files except Help.doc from the image.
+
+This functionality is compatible with the handling of .dockerignore files described here:
+
+https://docs.docker.com/engine/reference/builder/#dockerignore-file
+
 ## SEE ALSO
 buildah(1)

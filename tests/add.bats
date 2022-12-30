@@ -29,9 +29,15 @@ load helpers
   run_buildah add $cid ${TESTDIR}/randomfile /subdir
   # Copy two files to a specific subdirectory
   run_buildah add $cid ${TESTDIR}/randomfile ${TESTDIR}/other-randomfile /other-subdir
+  # Copy two files to a specific location, which succeeds because we can create it as a directory.
+  run_buildah add $cid ${TESTDIR}/randomfile ${TESTDIR}/other-randomfile /notthereyet-subdir
   # Copy two files to a specific location, which fails because it's not a directory.
+  <<<<<<< release-v1.14
   run_buildah 125 add ${TESTDIR}/randomfile ${TESTDIR}/other-randomfile $cid /notthereyet-subdir
   run_buildah 125 add ${TESTDIR}/randomfile $cid ${TESTDIR}/other-randomfile /randomfile
+  =======
+  run_buildah 125 add $cid ${TESTDIR}/randomfile ${TESTDIR}/other-randomfile /randomfile
+  >>>>>>> release-1.16
   # Copy a file to a different working directory
   run_buildah config --workingdir=/cwd $cid
   run_buildah add $cid ${TESTDIR}/randomfile
@@ -170,4 +176,20 @@ load helpers
 
   run_buildah add $cid https://github.com/containers/buildah/raw/master/README.md /home
   run_buildah run $cid ls /home/README.md
+}
+
+@test "add relative" {
+  # make sure we don't get thrown by relative source locations
+  _prefetch busybox
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+
+  run_buildah add $cid deny.json /
+  run_buildah run $cid ls /deny.json
+
+  run_buildah add $cid ./docker.json /
+  run_buildah run $cid ls /docker.json
+
+  run_buildah add $cid tools/Makefile /
+  run_buildah run $cid ls /Makefile
 }
