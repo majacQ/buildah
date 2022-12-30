@@ -422,6 +422,14 @@ github.com/ostreedev/ostree-go/pkg/otbuiltin
 github.com/pkg/errors
 # github.com/pmezard/go-difflib v1.0.0
 github.com/pmezard/go-difflib/difflib
+  <<<<<<< release-1.20
+# github.com/pquerna/ffjson v0.0.0-20190813045741-dac163c6c0a9
+github.com/pquerna/ffjson/fflib/v1
+github.com/pquerna/ffjson/fflib/v1/internal
+github.com/pquerna/ffjson/inception
+github.com/pquerna/ffjson/shared
+  =======
+  >>>>>>> release-1.21
 # github.com/prometheus/client_golang v1.11.1
 github.com/prometheus/client_golang/prometheus
 github.com/prometheus/client_golang/prometheus/internal
@@ -586,7 +594,11 @@ google.golang.org/grpc/serviceconfig
 google.golang.org/grpc/stats
 google.golang.org/grpc/status
 google.golang.org/grpc/tap
+  <<<<<<< release-1.20
+# google.golang.org/protobuf v1.26.0-rc.1
+  =======
 # google.golang.org/protobuf v1.26.0
+  >>>>>>> release-1.21
 google.golang.org/protobuf/encoding/prototext
 google.golang.org/protobuf/encoding/protowire
 google.golang.org/protobuf/internal/descfmt

@@ -26,7 +26,11 @@
 
 Name:           buildah
 # Bump version in define/types.go too
+  <<<<<<< release-1.20
+Version:        1.20.2
+  =======
 Version:        1.21.5
+  >>>>>>> release-1.21
 Release:        1.git%{shortcommit}%{?dist}
 Summary:        A command line tool used to creating OCI Images
 License:        ASL 2.0
@@ -100,11 +104,17 @@ make DESTDIR=%{buildroot} PREFIX=%{_prefix} install install.completions
 %{_datadir}/bash-completion/completions/*
 
 %changelog
+  <<<<<<< release-1.20
+* Tue Sep 20 2022 Nalin Dahyabhai <nalin@redhat.com> 1.20.2-1
+  =======
 * Tue Sep 20 2022 Nalin Dahyabhai <nalin@redhat.com> 1.21.5-1
+  >>>>>>> release-1.21
 - run: add container gid to additional groups
 - run: do not set the inheritable capabilities
 - bump github.com/prometheus/client_golang to v1.11.1
 
+  <<<<<<< release-1.20
+  =======
 * Thu Jul 22 2021 Nalin Dahyabhai <nalin@redhat.com> 1.21.4-1
 - tests: make it easer to override the location of the copy helper
 - tests: add and use a "copy" helper instead of podman load/save
@@ -202,6 +212,7 @@ make DESTDIR=%{buildroot} PREFIX=%{_prefix} install install.completions
 - Update nix pin with `make nixpkgs`
 - Bump to v1.20.2-dev
 
+  >>>>>>> release-1.21
 * Tue Apr 13, 2021 Tom Sweeney <tsweeney@redhat.com> 1.20.1-1
 - Run container with isolation type set at 'from'
 - bats helpers.bash - minor refactoring

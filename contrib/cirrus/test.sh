@@ -46,10 +46,13 @@ else
             # are required to ensure the latest docker version is used.
             [[ "$OS_RELEASE_ID" == "ubuntu" ]] || \
                 bad_os_id_ver
+  <<<<<<< release-1.20
+  =======
             warn "Installing previously downloaded/cached docker packages"
             ooe.sh dpkg -i \
                 $PACKAGE_DOWNLOAD_DIR/containerd.io*.deb \
                 $PACKAGE_DOWNLOAD_DIR/docker-ce*.deb
+  >>>>>>> release-1.21
 
             systemctl enable --now docker
             showrun make test-conformance
