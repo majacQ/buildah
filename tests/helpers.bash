@@ -2,9 +2,10 @@
 
 BUILDAH_BINARY=${BUILDAH_BINARY:-$(dirname ${BASH_SOURCE})/../bin/buildah}
 IMGTYPE_BINARY=${IMGTYPE_BINARY:-$(dirname ${BASH_SOURCE})/../bin/imgtype}
+COPY_BINARY=${COPY_BINARY:-$(dirname ${BASH_SOURCE})/../bin/copy}
 TESTSDIR=${TESTSDIR:-$(dirname ${BASH_SOURCE})}
 STORAGE_DRIVER=${STORAGE_DRIVER:-vfs}
-PATH=$(dirname ${BASH_SOURCE})/..:${PATH}
+PATH=$(dirname ${BASH_SOURCE})/../bin:${PATH}
 OCI=$(${BUILDAH_BINARY} info --format '{{.host.OCIRuntime}}' || command -v runc || command -v crun)
 
 # Default timeout for a buildah command.
@@ -21,11 +22,18 @@ function setup() {
     suffix=$(dd if=/dev/urandom bs=12 count=1 status=none | od -An -tx1 | sed -e 's, ,,g')
     TESTDIR=${BATS_TMPDIR}/tmp${suffix}
     rm -fr ${TESTDIR}
-    mkdir -p ${TESTDIR}/{root,runroot}
-
+    mkdir -p ${TESTDIR}/{root,runroot,sigstore,registries.d,cache}
+    echo "default-docker:                                                           " >> ${TESTDIR}/registries.d/default.yaml
+    echo "  sigstore-staging: file://${TESTDIR}/sigstore                            " >> ${TESTDIR}/registries.d/default.yaml
+    echo "docker:                                                                   " >> ${TESTDIR}/registries.d/default.yaml
+    echo "  registry.access.redhat.com:                                             " >> ${TESTDIR}/registries.d/default.yaml
+    echo "    sigstore: https://access.redhat.com/webassets/docker/content/sigstore " >> ${TESTDIR}/registries.d/default.yaml
+    echo "  registry.redhat.io:                                                     " >> ${TESTDIR}/registries.d/default.yaml
+    echo "    sigstore: https://registry.redhat.io/containers/sigstore              " >> ${TESTDIR}/registries.d/default.yaml
     # Common options for all buildah and podman invocations
     ROOTDIR_OPTS="--root ${TESTDIR}/root --runroot ${TESTDIR}/runroot --storage-driver ${STORAGE_DRIVER}"
-    REGISTRY_OPTS="--registries-conf ${TESTSDIR}/registries.conf"
+    BUILDAH_REGISTRY_OPTS="--registries-conf ${TESTSDIR}/registries.conf --registries-conf-dir ${TESTDIR}/registries.d --short-name-alias-conf ${TESTDIR}/cache/shortnames.conf"
+    PODMAN_REGISTRY_OPTS="--registries-conf ${TESTSDIR}/registries.conf"
 }
 
 function starthttpd() {
@@ -48,6 +56,7 @@ function stophttpd() {
 
 function teardown() {
     stophttpd
+    stop_git_daemon
 
     # Workaround for #1991 - buildah + overlayfs leaks mount points.
     # Many tests leave behind /var/tmp/.../root/overlay and sub-mounts;
@@ -63,6 +72,18 @@ function teardown() {
     popd
 }
 
+function normalize_image_name() {
+    for img in "$@"; do
+        if [[ "${img##*/}" == "$img" ]] ; then
+            echo -n docker.io/library/"$img"
+        elif [[ docker.io/"${img##*/}" == "$img" ]] ; then
+            echo -n docker.io/library/"${img##*/}"
+        else
+            echo -n "$img"
+        fi
+    done
+}
+
 function _prefetch() {
     if [ -z "${_BUILDAH_IMAGE_CACHEDIR}" ]; then
         _pgid=$(sed -ne 's/^NSpgid:\s*//p' /proc/$$/status)
@@ -71,23 +92,23 @@ function _prefetch() {
     fi
 
     for img in "$@"; do
+        img=$(normalize_image_name "$img")
         echo "# [checking for: $img]" >&2
         fname=$(tr -c a-zA-Z0-9.- - <<< "$img")
-        if [ -e $_BUILDAH_IMAGE_CACHEDIR/$fname.tar ]; then
+        if [ -d $_BUILDAH_IMAGE_CACHEDIR/$fname ]; then
             echo "# [restoring from cache: $_BUILDAH_IMAGE_CACHEDIR / $img]" >&2
-            podman load -i $_BUILDAH_IMAGE_CACHEDIR/$fname.tar
+            copy dir:$_BUILDAH_IMAGE_CACHEDIR/$fname containers-storage:"$img"
         else
-            echo "# [buildah pull $img]" >&2
-            buildah pull $img || (
-                echo "Retrying:"
-                buildah pull $img || (
-                    echo "Re-retrying:"
-                    buildah pull $img
-                )
-            )
-            rm -f $_BUILDAH_IMAGE_CACHEDIR/$fname.tar
-            echo "# [podman save --format oci-archive $img >$_BUILDAH_IMAGE_CACHEDIR/$fname.tar ]" >&2
-            podman save --format oci-archive --output=${_BUILDAH_IMAGE_CACHEDIR}/$fname.tar $img
+            rm -fr $_BUILDAH_IMAGE_CACHEDIR/$fname
+            echo "# [copy docker://$img dir:$_BUILDAH_IMAGE_CACHEDIR/$fname]" >&2
+            for attempt in $(seq 3) ; do
+                if copy docker://"$img" dir:$_BUILDAH_IMAGE_CACHEDIR/$fname ; then
+                    break
+                fi
+                sleep 5
+            done
+            echo "# [copy dir:$_BUILDAH_IMAGE_CACHEDIR/$fname containers-storage:$img]" >&2
+            copy dir:$_BUILDAH_IMAGE_CACHEDIR/$fname containers-storage:"$img"
         fi
     done
 }
@@ -97,15 +118,19 @@ function createrandom() {
 }
 
 function buildah() {
-    ${BUILDAH_BINARY} ${REGISTRY_OPTS} ${ROOTDIR_OPTS} "$@"
+    ${BUILDAH_BINARY} ${BUILDAH_REGISTRY_OPTS} ${ROOTDIR_OPTS} "$@"
 }
 
 function imgtype() {
     ${IMGTYPE_BINARY} ${ROOTDIR_OPTS} "$@"
 }
 
+function copy() {
+    ${COPY_BINARY} ${ROOTDIR_OPTS} ${BUILDAH_REGISTRY_OPTS} "$@"
+}
+
 function podman() {
-    command podman ${REGISTRY_OPTS} ${ROOTDIR_OPTS} "$@"
+    command podman ${PODMAN_REGISTRY_OPTS} ${ROOTDIR_OPTS} "$@"
 }
 
 #################
@@ -148,7 +173,7 @@ function run_buildah() {
 
         # stdout is only emitted upon error; this echo is to help a debugger
         echo "\$ $BUILDAH_BINARY $*"
-        run timeout --foreground --kill=10 $BUILDAH_TIMEOUT ${BUILDAH_BINARY} ${REGISTRY_OPTS} ${ROOTDIR_OPTS} "$@"
+        run env CONTAINERS_CONF=${CONTAINERS_CONF:-$(dirname ${BASH_SOURCE})/containers.conf} timeout --foreground --kill=10 $BUILDAH_TIMEOUT ${BUILDAH_BINARY} ${BUILDAH_REGISTRY_OPTS} ${ROOTDIR_OPTS} "$@"
         # without "quotes", multiple lines are glommed together into one
         if [ -n "$output" ]; then
             echo "$output"
@@ -357,4 +382,33 @@ function skip_if_in_container() {
     if test "$CONTAINER" = "podman"; then
         skip "This test is not working inside a container"
     fi
+}
+
+#######################
+#  skip_if_no_docker  #
+#######################
+function skip_if_no_docker() {
+  which docker                  || skip "docker is not installed"
+  systemctl -q is-active docker || skip "docker.service is not active"
+
+  # Confirm that this is really truly docker, not podman.
+  docker_version=$(docker --version)
+  if [[ $docker_version =~ podman ]]; then
+    skip "this test needs actual docker, not podman-docker"
+  fi
+}
+
+function start_git_daemon() {
+  daemondir=${TESTDIR}/git-daemon
+  mkdir -p ${daemondir}/repo
+  gzip -dc < ${1:-${TESTSDIR}/git-daemon/repo.tar.gz} | tar x -C ${daemondir}/repo
+  GITPORT=$(($RANDOM + 32768))
+  git daemon --detach --pid-file=${TESTDIR}/git-daemon/pid --reuseaddr --port=${GITPORT} --base-path=${daemondir} ${daemondir}
+}
+
+function stop_git_daemon() {
+  if test -s ${TESTDIR}/git-daemon/pid ; then
+    kill $(cat ${TESTDIR}/git-daemon/pid)
+    rm -f ${TESTDIR}/git-daemon/pid
+  fi
 }

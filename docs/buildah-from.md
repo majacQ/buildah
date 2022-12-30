@@ -17,7 +17,7 @@ Multiple transports are supported:
   An existing local directory _path_ containing the manifest, layer tarballs, and signatures in individual files. This is a non-standardized format, primarily useful for debugging or noninvasive image inspection.
 
   **docker://**_docker-reference_ (Default)
-  An image in a registry implementing the "Docker Registry HTTP API V2". By default, uses the authorization state in `$XDG\_RUNTIME\_DIR/containers/auth.json`, which is set using `(buildah login)`. If the authorization state is not found there, `$HOME/.docker/config.json` is checked, which is set using `(docker login)`.
+  An image in a registry implementing the "Docker Registry HTTP API V2". By default, uses the authorization state in `$XDG\_RUNTIME\_DIR/containers/auth.json`, which is set using `(buildah login)`.  If XDG_RUNTIME_DIR is not set, the default is /run/containers/$UID/auth.json. If the authorization state is not found there, `$HOME/.docker/config.json` is checked, which is set using `(docker login)`.
   If _docker-reference_ does not include a registry name, *localhost* will be consulted first, followed by any registries named in the registries configuration.
 
   **docker-archive:**_path_
@@ -55,8 +55,12 @@ Set the ARCH of the image to be pulled to the provided value instead of using th
 
 **--authfile** *path*
 
-Path of the authentication file. Default is ${XDG\_RUNTIME\_DIR}/containers/auth.json, which is set using `buildah login`.
+Path of the authentication file. Default is ${XDG_\RUNTIME\_DIR}/containers/auth.json. If XDG_RUNTIME_DIR is not set, the default is /run/containers/$UID/auth.json. This file is created using using `buildah login`.
+
 If the authorization state is not found there, $HOME/.docker/config.json is checked, which is set using `docker login`.
+
+Note: You can also override the default path of the authentication file by setting the REGISTRY\_AUTH\_FILE
+environment variable. `export REGISTRY_AUTH_FILE=path`
 
 **--cap-add**=*CAP\_xxx*
 
@@ -230,11 +234,13 @@ another process.
 Controls what type of isolation is used for running processes under `buildah
 run`.  Recognized types include *oci* (OCI-compatible runtime, the default),
 *rootless* (OCI-compatible runtime invoked using a modified
-configuration, with *--no-new-keyring* added to its *create*
-invocation, with network and UTS namespaces disabled, and IPC, PID,
-and user namespaces enabled; the default for unprivileged users), and
-*chroot* (an internal wrapper that leans more toward chroot(1) than
-container technology).
+configuration, with *--no-new-keyring* added to its *create* invocation,
+reusing the host's network and UTS namespaces, and creating private IPC, PID,
+mount, and user namespaces; the default for unprivileged users), and *chroot*
+(an internal wrapper that leans more toward chroot(1) than container
+technology, reusing the host's control group, network, IPC, and PID namespaces,
+and creating private mount and UTS namespaces, and creating user namespaces
+only when they're required for ID mapping).
 
 Note: You can also override the default isolation type by setting the
 BUILDAH\_ISOLATION environment variable.  `export BUILDAH_ISOLATION=oci`

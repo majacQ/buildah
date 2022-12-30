@@ -28,7 +28,7 @@ load helpers
   run_buildah rm $output
 
   run_buildah 125 from sha256:1111111111111111111111111111111111111111111111111111111111111111
-  expect_output --substring "error locating image with ID \"1111111111111111111111111111111111111111111111111111111111111111\""
+  expect_output --substring "1111111111111111111111111111111111111111111111111111111111111111: image not known"
 }
 
 @test "commit-to-from-elsewhere" {
@@ -68,8 +68,9 @@ load helpers
   run_buildah commit --signature-policy ${TESTSDIR}/policy.json "$cid" scratch2
   run_buildah rm $cid
   run_buildah tag scratch2 scratch3
-  run_buildah from --signature-policy ${TESTSDIR}/policy.json scratch3
-  expect_output "scratch3-working-container"
+  # Set --pull=false to prevent looking for a newer scratch3 image.
+  run_buildah from --pull=false --signature-policy ${TESTSDIR}/policy.json scratch3
+  expect_output --substring "scratch3-working-container"
   run_buildah rm $output
   run_buildah rmi scratch2 scratch3
 
@@ -137,7 +138,7 @@ load helpers
   run_buildah rmi alpine
 
   run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json docker-archive:${TESTDIR}/docker-alp.tar
-  expect_output "docker-archive-working-container"
+  expect_output "alpine-working-container"
   run_buildah rm $output
   run_buildah rmi -a
 
@@ -276,7 +277,7 @@ load helpers
 
   # Create a container that uses that mapping and U volume flag.
   _prefetch alpine
-  run_buildah from --signature-policy ${TESTSDIR}/policy.json --userns-uid-map 0:$uidbase:$uidsize --userns-gid-map 0:$gidbase:$gidsize --volume ${TESTDIR}/testdata:/mnt:z,U alpine
+  run_buildah from --pull=false --signature-policy ${TESTSDIR}/policy.json --userns-uid-map 0:$uidbase:$uidsize --userns-gid-map 0:$gidbase:$gidsize --volume ${TESTDIR}/testdata:/mnt:z,U alpine
   ctr="$output"
 
   # Test mounted volume has correct UID and GID ownership.
@@ -330,8 +331,7 @@ load helpers
 @test "from pull never" {
   run_buildah 125 from --signature-policy ${TESTSDIR}/policy.json --pull-never busybox
   echo "$output"
-  expect_output --substring "pull policy is \"never\" but \""
-  expect_output --substring "\" could not be found locally"
+  expect_output --substring "busybox: image not known"
 
   run_buildah from --signature-policy ${TESTSDIR}/policy.json --pull=false busybox
   echo "$output"
@@ -352,7 +352,7 @@ load helpers
 
 @test "from with nonexistent authfile: fails" {
   run_buildah 125 from --authfile /no/such/file --pull --signature-policy ${TESTSDIR}/policy.json alpine
-  expect_output "error checking authfile path /no/such/file: stat /no/such/file: no such file or directory"
+  expect_output "checking authfile: stat /no/such/file: no such file or directory"
 }
 
 @test "from --pull-always: emits 'Getting' even if image is cached" {
@@ -397,8 +397,8 @@ load helpers
 @test "from encrypted registry image" {
   _prefetch busybox
   mkdir ${TESTDIR}/tmp
-  openssl genrsa -out ${TESTDIR}/tmp/mykey.pem 1024
-  openssl genrsa -out ${TESTDIR}/tmp/mykey2.pem 1024
+  openssl genrsa -out ${TESTDIR}/tmp/mykey.pem 2048
+  openssl genrsa -out ${TESTDIR}/tmp/mykey2.pem 2048
   openssl rsa -in ${TESTDIR}/tmp/mykey.pem -pubout > ${TESTDIR}/tmp/mykey.pub
   run_buildah push --signature-policy ${TESTSDIR}/policy.json --tls-verify=false --creds testuser:testpassword --encryption-key jwe:${TESTDIR}/tmp/mykey.pub busybox docker://localhost:5000/buildah/busybox_encrypted:latest
 
@@ -412,6 +412,7 @@ load helpers
 
   # Providing the right key should succeed
   run_buildah from --tls-verify=false --creds testuser:testpassword --decryption-key ${TESTDIR}/tmp/mykey.pem docker://localhost:5000/buildah/busybox_encrypted:latest
+  run_buildah rm -a
   run_buildah rmi localhost:5000/buildah/busybox_encrypted:latest
 
   rm -rf ${TESTDIR}/tmp
@@ -490,7 +491,7 @@ load helpers
 
 @test "from ulimit test" {
   _prefetch alpine
-  run_buildah from -q --ulimit cpu=300 --signature-policy ${TESTDIR}/policy.json alpine
+  run_buildah from -q --ulimit cpu=300 --signature-policy ${TESTSDIR}/policy.json alpine
   cid=$output
   run_buildah run $cid /bin/sh -c "ulimit -t"
   expect_output "300" "ulimit -t"
@@ -498,7 +499,7 @@ load helpers
 
 @test "from isolation test" {
   _prefetch alpine
-  run_buildah from -q --isolation chroot --signature-policy ${TESTDIR}/policy.json alpine
+  run_buildah from -q --isolation chroot --signature-policy ${TESTSDIR}/policy.json alpine
   cid=$output
   run_buildah inspect $cid
   expect_output --substring '"Isolation": "chroot"'
@@ -510,4 +511,39 @@ load helpers
     # chroot isolation doesn't make a new PID namespace.
     expect_output "${host_pidns}"
   fi
+}
+
+@test "from cgroup-parent test" {
+  skip_if_chroot
+
+  _prefetch alpine
+  # with cgroup-parent
+  run_buildah from -q --cgroup-parent test-cgroup --signature-policy ${TESTSDIR}/policy.json alpine
+  cid=$output
+  run_buildah run $cid /bin/sh -c 'cat /proc/$$/cgroup'
+  expect_output --substring "test-cgroup"
+
+  # without cgroup-parent
+  run_buildah from -q --signature-policy ${TESTSDIR}/policy.json alpine
+  cid=$output
+  run_buildah run $cid /bin/sh -c 'cat /proc/$$/cgroup'
+  if [ -n "$(grep "test-cgroup" <<< "$output")" ]; then
+    die "Unexpected cgroup."
+  fi
+}
+
+@test "from cni config test" {
+  _prefetch alpine
+
+  cni_config_dir=${TESTDIR}/no-cni-configs
+  cni_plugin_path=${TESTDIR}/no-cni-plugin
+  mkdir -p ${cni_config_dir}
+  mkdir -p ${cni_plugin_path}
+  run_buildah from -q --cni-config-dir=${cni_config_dir} --cni-plugin-path=${cni_plugin_path} --signature-policy ${TESTSDIR}/policy.json alpine
+  cid=$output
+
+  run_buildah inspect --format '{{.CNIConfigDir}}' $cid
+  expect_output "${cni_config_dir}"
+  run_buildah inspect --format '{{.CNIPluginPath}}' $cid
+  expect_output "${cni_plugin_path}"
 }

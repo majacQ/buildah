@@ -22,7 +22,7 @@ The Buildah package provides a command line tool which can be used to:
 
 **--log-level** **value**
 
-The log level to be used. Either "debug", "info", "warn" or "error", per default "warn".
+The log level to be used. Either "trace", "debug", "info", "warn", "error", "fatal", or "panic", defaulting to "warn".
 
 **--help, -h**
 
@@ -53,6 +53,19 @@ Default root dir is configured in /etc/containers/storage.conf
 
 Storage state dir (default: "/run/containers/storage" for UID 0, "/run/user/$UID" for other users)
 Default state dir is configured in /etc/containers/storage.conf
+
+**--short-name-alias-conf** *path*
+
+Pathname of the file which contains cached mappings between short image names
+and their corresponding fully-qualified names.  It is used for mapping from
+names of images specified using short names like "hello-world" which don't
+include a registry component and a corresponding fully-specified name which
+includes a registry and any other components, such as
+"docker.io/library/hello-world".  It is not recommended that this option be
+used, as the default behavior of using the system-wide cache
+(*/var/cache/containers/short-name-aliases.conf*) or per-user cache
+(*$HOME/.cache/containers/short-name-aliases.conf*) to supplement system-wide
+defaults is most often preferred.
 
 **--storage-driver** **value**
 

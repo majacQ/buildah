@@ -1451,15 +1451,18 @@ var internalTestCases = []testCase{
 		contextDir:      "mount",
 		buildahRegex:    "/tmp/test/file.*?regular file.*?/tmp/test/file2.*?regular file",
 		withoutDocker:   true,
-		transientMounts: []string{"@@TEMPDIR@@:/tmp/test"},
+		transientMounts: []string{"@@TEMPDIR@@:/tmp/test" + selinuxMountFlag()},
 	},
 
 	{
-		name:            "transient-mount",
-		contextDir:      "transientmount",
-		buildahRegex:    "file2.*?FROM busybox ENV name value",
-		withoutDocker:   true,
-		transientMounts: []string{"@@TEMPDIR@@:/mountdir", "@@TEMPDIR@@/Dockerfile.env:/mountfile"},
+		name:          "transient-mount",
+		contextDir:    "transientmount",
+		buildahRegex:  "file2.*?FROM busybox ENV name value",
+		withoutDocker: true,
+		transientMounts: []string{
+			"@@TEMPDIR@@:/mountdir" + selinuxMountFlag(),
+			"@@TEMPDIR@@/Dockerfile.env:/mountfile" + selinuxMountFlag(),
+		},
 	},
 
 	{
@@ -1926,6 +1929,36 @@ var internalTestCases = []testCase{
 	},
 
 	{
+		name: "copy-multiple-missing-file-with-glob",
+		dockerfileContents: strings.Join([]string{
+			"FROM scratch",
+			"COPY file-z.txt subdir-* subdir/",
+		}, "\n"),
+		contextDir:   "dockerignore/populated",
+		shouldFailAt: 2,
+	},
+
+	{
+		name: "copy-multiple-missing-file-with-nomatch-on-glob",
+		dockerfileContents: strings.Join([]string{
+			"FROM scratch",
+			"COPY missing* subdir/",
+		}, "\n"),
+		contextDir:   "dockerignore/populated",
+		shouldFailAt: 2,
+	},
+
+	{
+		name: "copy-multiple-some-missing-glob",
+		dockerfileContents: strings.Join([]string{
+			"FROM scratch",
+			"COPY file-a.txt subdir-* file-?.txt missing* subdir/",
+		}, "\n"),
+		contextDir: "dockerignore/populated",
+		fsSkip:     []string{"(dir):subdir:mtime"},
+	},
+
+	{
 		name: "file-in-workdir-in-other-stage",
 		dockerfileContents: strings.Join([]string{
 			"FROM scratch AS base",
@@ -1942,7 +1975,7 @@ var internalTestCases = []testCase{
 		name:         "copy-integration1",
 		contextDir:   "dockerignore/integration1",
 		shouldFailAt: 3,
-		failureRegex: "(no such file or directory)|(file not found)",
+		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
 	},
 
 	{
@@ -1954,7 +1987,7 @@ var internalTestCases = []testCase{
 		name:         "copy-integration3",
 		contextDir:   "dockerignore/integration3",
 		shouldFailAt: 4,
-		failureRegex: "(no such file or directory)|(file not found)",
+		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
 	},
 
 	{
@@ -2732,14 +2765,14 @@ var internalTestCases = []testCase{
 		name:         "dockerignore-allowlist-subdir-nofile-dir",
 		contextDir:   "dockerignore/allowlist/subdir-nofile",
 		shouldFailAt: 2,
-		failureRegex: "(no such file or directory)|(file not found)",
+		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
 	},
 
 	{
 		name:         "dockerignore-allowlist-subdir-nofile-file",
 		contextDir:   "dockerignore/allowlist/subdir-nofile",
 		shouldFailAt: 2,
-		failureRegex: "(no such file or directory)|(file not found)",
+		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
 	},
 
 	{
@@ -2810,14 +2843,14 @@ var internalTestCases = []testCase{
 		name:         "dockerignore-allowlist-alternating-nothing",
 		contextDir:   "dockerignore/allowlist/alternating-nothing",
 		shouldFailAt: 7,
-		failureRegex: "(no such file or directory)|(file not found)",
+		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
 	},
 
 	{
 		name:         "dockerignore-allowlist-alternating-other",
 		contextDir:   "dockerignore/allowlist/alternating-other",
 		shouldFailAt: 7,
-		failureRegex: "(no such file or directory)|(file not found)",
+		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
 	},
 
 	{

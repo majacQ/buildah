@@ -9,10 +9,11 @@ import (
 	"os"
 	"strings"
 
-	"github.com/containers/buildah/manifests"
 	"github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
+	"github.com/containers/common/libimage"
+	"github.com/containers/common/libimage/manifests"
 	"github.com/containers/common/pkg/auth"
 	cp "github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/manifest"
@@ -20,6 +21,7 @@ import (
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
 	"github.com/containers/storage"
+	"github.com/hashicorp/go-multierror"
 	digest "github.com/opencontainers/go-digest"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
@@ -52,6 +54,7 @@ func init() {
 		manifestAnnotateDescription = "\n  Adds or updates information about an entry in a manifest list or image index."
 		manifestInspectDescription  = "\n  Display the contents of a manifest list or image index."
 		manifestPushDescription     = "\n  Pushes manifest lists and image indexes to registries."
+		manifestRmDescription       = "\n  Remove one or more manifest lists from local storage."
 		manifestCreateOpts          manifestCreateOpts
 		manifestAddOpts             manifestAddOpts
 		manifestRemoveOpts          manifestRemoveOpts
@@ -67,9 +70,10 @@ func init() {
   buildah manifest add localhost/list localhost/image
   buildah manifest annotate --annotation A=B localhost/list localhost/image
   buildah manifest annotate --annotation A=B localhost/list sha256:entryManifestDigest
-  buildah manifest remove localhost/list sha256:entryManifestDigest
   buildah manifest inspect localhost/list
-  buildah manifest push localhost/list transport:destination`,
+  buildah manifest push localhost/list transport:destination
+  buildah manifest remove localhost/list sha256:entryManifestDigest
+  buildah manifest rm localhost/list`,
 	}
 	manifestCommand.SetUsageTemplate(UsageTemplate())
 	rootCmd.AddCommand(manifestCommand)
@@ -204,6 +208,19 @@ func init() {
 	flags.BoolVarP(&manifestPushOpts.quiet, "quiet", "q", false, "don't output progress information when pushing lists")
 	flags.SetNormalizeFunc(cli.AliasFlags)
 	manifestCommand.AddCommand(manifestPushCommand)
+
+	manifestRmCommand := &cobra.Command{
+		Use:   "rm",
+		Short: "Remove manifest list",
+		Long:  manifestRmDescription,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return manifestRmCmd(cmd, args)
+		},
+		Example: `buildah manifest rm mylist:v1.11`,
+		Args:    cobra.MinimumNArgs(1),
+	}
+	manifestRmCommand.SetUsageTemplate(UsageTemplate())
+	manifestCommand.AddCommand(manifestRmCommand)
 }
 
 func manifestCreateCmd(c *cobra.Command, args []string, opts manifestCreateOpts) error {
@@ -225,7 +242,7 @@ func manifestCreateCmd(c *cobra.Command, args []string, opts manifestCreateOpts)
 
 	list := manifests.Create()
 
-	names, err := util.ExpandNames([]string{listImageSpec}, "", systemContext, store)
+	names, err := util.ExpandNames([]string{listImageSpec}, systemContext, store)
 	if err != nil {
 		return errors.Wrapf(err, "error encountered while expanding image name %q", listImageSpec)
 	}
@@ -284,8 +301,16 @@ func manifestAddCmd(c *cobra.Command, args []string, opts manifestAddOpts) error
 	if err != nil {
 		return errors.Wrapf(err, "error building system context")
 	}
+	runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: systemContext})
+	if err != nil {
+		return err
+	}
 
-	_, listImage, err := util.FindImage(store, "", systemContext, listImageSpec)
+	manifestList, err := runtime.LookupManifestList(listImageSpec)
+	if err != nil {
+		return err
+	}
+	_, list, err := manifests.LoadFromImage(store, manifestList.ID())
 	if err != nil {
 		return err
 	}
@@ -298,11 +323,6 @@ func manifestAddCmd(c *cobra.Command, args []string, opts manifestAddOpts) error
 				return err
 			}
 		}
-	}
-
-	_, list, err := manifests.LoadFromImage(store, listImage.ID)
-	if err != nil {
-		return err
 	}
 
 	digest, err := list.Add(getContext(), systemContext, ref, opts.all)
@@ -362,7 +382,7 @@ func manifestAddCmd(c *cobra.Command, args []string, opts manifestAddOpts) error
 		}
 	}
 
-	updatedListID, err := list.SaveToImage(store, listImage.ID, nil, "")
+	updatedListID, err := list.SaveToImage(store, manifestList.ID(), nil, "")
 	if err == nil {
 		fmt.Printf("%s: %s\n", updatedListID, digest.String())
 	}
@@ -404,27 +424,58 @@ func manifestRemoveCmd(c *cobra.Command, args []string, opts manifestRemoveOpts)
 		return errors.Wrapf(err, "error building system context")
 	}
 
-	_, listImage, err := util.FindImage(store, "", systemContext, listImageSpec)
+	runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: systemContext})
+	if err != nil {
+		return err
+	}
+	manifestList, err := runtime.LookupManifestList(listImageSpec)
 	if err != nil {
 		return err
 	}
 
-	_, list, err := manifests.LoadFromImage(store, listImage.ID)
-	if err != nil {
+	if err := manifestList.RemoveInstance(instanceDigest); err != nil {
 		return err
 	}
 
-	err = list.Remove(instanceDigest)
-	if err != nil {
-		return err
-	}
-
-	updatedListID, err := list.SaveToImage(store, listImage.ID, nil, "")
-	if err == nil {
-		fmt.Printf("%s: %s\n", updatedListID, instanceDigest.String())
-	}
+	fmt.Printf("%s: %s\n", manifestList.ID(), instanceDigest.String())
 
 	return nil
+}
+
+func manifestRmCmd(c *cobra.Command, args []string) error {
+	store, err := getStore(c)
+	if err != nil {
+		return err
+	}
+
+	systemContext, err := parse.SystemContextFromOptions(c)
+	if err != nil {
+		return errors.Wrapf(err, "error building system context")
+	}
+
+	runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: systemContext})
+	if err != nil {
+		return err
+	}
+
+	options := &libimage.RemoveImagesOptions{
+		Filters: []string{"readonly=false"},
+	}
+	rmiReports, rmiErrors := runtime.RemoveImages(context.Background(), args, options)
+	for _, r := range rmiReports {
+		for _, u := range r.Untagged {
+			fmt.Printf("untagged: %s\n", u)
+		}
+	}
+	for _, r := range rmiReports {
+		if r.Removed {
+			fmt.Printf("%s\n", r.ID)
+		}
+	}
+
+	var multiE *multierror.Error
+	multiE = multierror.Append(multiE, rmiErrors...)
+	return multiE.ErrorOrNil()
 }
 
 func manifestAnnotateCmd(c *cobra.Command, args []string, opts manifestAnnotateOpts) error {
@@ -460,13 +511,17 @@ func manifestAnnotateCmd(c *cobra.Command, args []string, opts manifestAnnotateO
 	if err != nil {
 		return errors.Wrapf(err, "error building system context")
 	}
-
-	_, listImage, err := util.FindImage(store, "", systemContext, listImageSpec)
+	runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: systemContext})
 	if err != nil {
 		return err
 	}
 
-	_, list, err := manifests.LoadFromImage(store, listImage.ID)
+	manifestList, err := runtime.LookupManifestList(listImageSpec)
+	if err != nil {
+		return err
+	}
+
+	_, list, err := manifests.LoadFromImage(store, manifestList.ID())
 	if err != nil {
 		return err
 	}
@@ -537,7 +592,7 @@ func manifestAnnotateCmd(c *cobra.Command, args []string, opts manifestAnnotateO
 		}
 	}
 
-	updatedListID, err := list.SaveToImage(store, listImage.ID, nil, "")
+	updatedListID, err := list.SaveToImage(store, manifestList.ID(), nil, "")
 	if err == nil {
 		fmt.Printf("%s: %s\n", updatedListID, digest.String())
 	}
@@ -573,6 +628,49 @@ func manifestInspectCmd(c *cobra.Command, args []string, opts manifestInspectOpt
 }
 
 func manifestInspect(ctx context.Context, store storage.Store, systemContext *types.SystemContext, imageSpec string) error {
+	runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: systemContext})
+	if err != nil {
+		return err
+	}
+
+	printManifest := func(manifest []byte) error {
+		var b bytes.Buffer
+		err = json.Indent(&b, manifest, "", "    ")
+		if err != nil {
+			return errors.Wrapf(err, "error rendering manifest for display")
+		}
+
+		fmt.Printf("%s\n", b.String())
+		return nil
+	}
+
+	// Before doing a remote lookup, attempt to resolve the manifest list
+	// locally.
+	manifestList, err := runtime.LookupManifestList(imageSpec)
+	switch errors.Cause(err) {
+	case storage.ErrImageUnknown, libimage.ErrNotAManifestList:
+		// We need to do the remote inspection below.
+	case nil:
+		schema2List, err := manifestList.Inspect()
+		if err != nil {
+			return err
+		}
+
+		rawSchema2List, err := json.Marshal(schema2List)
+		if err != nil {
+			return err
+		}
+
+		return printManifest(rawSchema2List)
+
+	default:
+		// Fatal error.
+		return err
+	}
+
+	// TODO: at some point `libimage` should support resolving manifests
+	// like that.  Similar to `libimage.Runtime.LookupImage` we could
+	// implement a `*.LookupImageIndex`.
 	refs, err := util.ResolveNameToReferences(store, systemContext, imageSpec)
 	if err != nil {
 		logrus.Debugf("error parsing reference to image %q: %v", imageSpec, err)
@@ -627,15 +725,7 @@ func manifestInspect(ctx context.Context, store storage.Store, systemContext *ty
 		return latestErr
 	}
 
-	var b bytes.Buffer
-	err = json.Indent(&b, result, "", "    ")
-	if err != nil {
-		return errors.Wrapf(err, "error rendering manifest for display")
-	}
-
-	fmt.Printf("%s\n", b.String())
-
-	return nil
+	return printManifest(result)
 }
 
 func manifestPushCmd(c *cobra.Command, args []string, opts pushOptions) error {
@@ -676,12 +766,17 @@ func manifestPushCmd(c *cobra.Command, args []string, opts pushOptions) error {
 }
 
 func manifestPush(systemContext *types.SystemContext, store storage.Store, listImageSpec, destSpec string, opts pushOptions) error {
-	_, listImage, err := util.FindImage(store, "", systemContext, listImageSpec)
+	runtime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: systemContext})
 	if err != nil {
 		return err
 	}
 
-	_, list, err := manifests.LoadFromImage(store, listImage.ID)
+	manifestList, err := runtime.LookupManifestList(listImageSpec)
+	if err != nil {
+		return err
+	}
+
+	_, list, err := manifests.LoadFromImage(store, manifestList.ID())
 	if err != nil {
 		return err
 	}
@@ -722,7 +817,7 @@ func manifestPush(systemContext *types.SystemContext, store storage.Store, listI
 	_, digest, err := list.Push(getContext(), dest, options)
 
 	if err == nil && opts.rm {
-		_, err = store.DeleteImage(listImage.ID, true)
+		_, err = store.DeleteImage(manifestList.ID(), true)
 	}
 
 	if opts.digestfile != "" {

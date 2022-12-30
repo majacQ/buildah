@@ -20,7 +20,7 @@ The build context directory can be specified as the http(s) URL of an archive, g
 
 If no context directory is specified, then Buildah will assume the current working directory as build context, which should contain a Containerfile.
 
-Containerfiles ending with a ".in" suffix will be preprocessed via CPP(1).  This can be useful to decompose Containerfiles into several reusable parts that can be used via CPP's **#include** directive.  Notice, a Containerfile.in file can still be used by other tools when manually preprocessing them via `cpp -E`.
+Containerfiles ending with a ".in" suffix will be preprocessed via cpp(1).  This can be useful to decompose Containerfiles into several reusable parts that can be used via CPP's **#include** directive.  Notice, a Containerfile.in file can still be used by other tools when manually preprocessing them via `cpp -E`. Any comments ( Lines beginning with `#` ) in included Containerfile(s) that are not preprocess commands, will be printed as warnings during builds.
 
 When the URL is an archive, the contents of the URL is downloaded to a temporary location and extracted before execution.
 
@@ -48,7 +48,8 @@ Set the ARCH of the image to be pulled to the provided value instead of using th
 
 **--authfile** *path*
 
-Path of the authentication file. Default is ${XDG\_RUNTIME\_DIR}/containers/auth.json, which is set using `buildah login`.
+Path of the authentication file. Default is ${XDG_\RUNTIME\_DIR}/containers/auth.json. If XDG_RUNTIME_DIR is not set, the default is /run/containers/$UID/auth.json. This file is created using using `buildah login`.
+
 If the authorization state is not found there, $HOME/.docker/config.json is checked, which is set using `docker login`.
 
 Note: You can also override the default path of the authentication file by setting the REGISTRY\_AUTH\_FILE
@@ -306,11 +307,13 @@ another process.
 Controls what type of isolation is used for running processes as part of `RUN`
 instructions.  Recognized types include *oci* (OCI-compatible runtime, the
 default), *rootless* (OCI-compatible runtime invoked using a modified
-configuration, with *--no-new-keyring* added to its *create*
-invocation, with network and UTS namespaces disabled, and IPC, PID,
-and user namespaces enabled; the default for unprivileged users), and
-*chroot* (an internal wrapper that leans more toward chroot(1) than
-container technology).
+configuration, with *--no-new-keyring* added to its *create* invocation,
+reusing the host's network and UTS namespaces, and creating private IPC, PID,
+mount, and user namespaces; the default for unprivileged users), and *chroot*
+(an internal wrapper that leans more toward chroot(1) than container
+technology, reusing the host's control group, network, IPC, and PID namespaces,
+and creating private mount and UTS namespaces, and creating user namespaces
+only when they're required for ID mapping).
 
 Note: You can also override the default isolation type by setting the
 BUILDAH\_ISOLATION environment variable.  `export BUILDAH_ISOLATION=oci`
@@ -348,12 +351,6 @@ environment variable. `export BUILDAH_LAYERS=true`
 
 Log output which would be sent to standard output and standard error to the
 specified file instead of to standard output and standard error.
-
-**--loglevel** *number*
-
-Adjust the logging level up or down.  Valid option values range from -2 to 3,
-with 3 being roughly equivalent to using the global *--log-level=debug* option, and
-values below 0 omitting even error messages which accompany fatal errors.
 
 **--manifest** "manifest"
 
@@ -464,6 +461,15 @@ consult the manpages of the selected container runtime.
 
 Note: Do not pass the leading `--` to the flag. To pass the runc flag `--log-format json`
 to buildah bud, the option given would be `--runtime-flag log-format=json`.
+
+**--secret**=**id=id,src=path**
+Pass secret information to be used in the Containerfile for building images
+in a safe way that will not end up stored in the final image, or be seen in other stages.
+The secret will be mounted in the container at the default location of `/run/secrets/id`.
+
+To later use the secret, use the --mount flag in a `RUN` instruction within a `Containerfile`:
+
+`RUN --mount=type=secret,id=mysecret cat /run/secrets/mysecret`
 
 **--security-opt**=[]
 
@@ -758,6 +764,8 @@ buildah bud --no-cache --rm=false -t imageName .
 
 buildah bud --dns-search=example.com --dns=223.5.5.5 --dns-option=use-vc .
 
+buildah bud -f Containerfile.in -t imageName .
+
 ### Building an multi-architecture image using a --manifest option (Requires emulation software)
 
 buildah bud --arch arm --manifest myimage /tmp/mysrc
@@ -857,7 +865,7 @@ registries.conf is the configuration file which specifies which container regist
 Signature policy file.  This defines the trust policy for container images.  Controls which container registries can be used for image, and whether or not the tool should trust the images.
 
 ## SEE ALSO
-buildah(1), CPP(1), buildah-login(1), docker-login(1), namespaces(7), pid\_namespaces(7), containers-policy.json(5), containers-registries.conf(5), user\_namespaces(7), crun(1), runc(8)
+buildah(1), cpp(1), buildah-login(1), docker-login(1), namespaces(7), pid\_namespaces(7), containers-policy.json(5), containers-registries.conf(5), user\_namespaces(7), crun(1), runc(8)
 
 ## FOOTNOTES
 <a name="Footnote1">1</a>: The Buildah project is committed to inclusivity, a core value of open source. The `master` and `slave` mount propagation terminology used here is problematic and divisive, and should be changed. However, these terms are currently used within the Linux kernel and must be used as-is at this time. When the kernel maintainers rectify this usage, Buildah will follow suit immediately.

@@ -24,20 +24,21 @@ import (
 )
 
 type globalFlags struct {
-	Debug             bool
-	LogLevel          string
-	Root              string
-	RunRoot           string
-	StorageDriver     string
-	RegistriesConf    string
-	RegistriesConfDir string
-	DefaultMountsFile string
-	StorageOpts       []string
-	UserNSUID         []string
-	UserNSGID         []string
-	CPUProfile        string
-	cpuProfileFile    *os.File
-	MemoryProfile     string
+	Debug                      bool
+	LogLevel                   string
+	Root                       string
+	RunRoot                    string
+	StorageDriver              string
+	RegistriesConf             string
+	RegistriesConfDir          string
+	DefaultMountsFile          string
+	StorageOpts                []string
+	UserNSUID                  []string
+	UserNSGID                  []string
+	CPUProfile                 string
+	cpuProfileFile             *os.File
+	MemoryProfile              string
+	UserShortNameAliasConfPath string
 }
 
 var rootCmd = &cobra.Command{
@@ -61,8 +62,6 @@ var (
 )
 
 func init() {
-	logrus.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
-
 	var (
 		defaultStoreDriverOptions []string
 	)
@@ -85,6 +84,7 @@ func init() {
 	// TODO Need to allow for environment variable
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.RegistriesConf, "registries-conf", "", "path to registries.conf file (not usually used)")
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.RegistriesConfDir, "registries-conf-dir", "", "path to registries.conf.d directory (not usually used)")
+	rootCmd.PersistentFlags().StringVar(&globalFlagResults.UserShortNameAliasConfPath, "short-name-alias-conf", "", "path to short name alias cache file (not usually used)")
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.Root, "root", storageOptions.GraphRoot, "storage root dir")
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.RunRoot, "runroot", storageOptions.RunRoot, "storage state dir")
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.StorageDriver, "storage-driver", storageOptions.GraphDriverName, "storage-driver")
@@ -92,7 +92,7 @@ func init() {
 	rootCmd.PersistentFlags().StringSliceVar(&globalFlagResults.UserNSUID, "userns-uid-map", []string{}, "default `ctrID:hostID:length` UID mapping to use")
 	rootCmd.PersistentFlags().StringSliceVar(&globalFlagResults.UserNSGID, "userns-gid-map", []string{}, "default `ctrID:hostID:length` GID mapping to use")
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.DefaultMountsFile, "default-mounts-file", "", "path to default mounts file")
-	rootCmd.PersistentFlags().StringVar(&globalFlagResults.LogLevel, logLevel, "warn", `The log level to be used. Either "debug", "info", "warn" or "error".`)
+	rootCmd.PersistentFlags().StringVar(&globalFlagResults.LogLevel, logLevel, "warn", `The log level to be used. Either "trace", "debug", "info", "warn", "error", "fatal", or "panic".`)
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.CPUProfile, "cpu-profile", "", "`file` to write CPU profile")
 	rootCmd.PersistentFlags().StringVar(&globalFlagResults.MemoryProfile, "memory-profile", "", "`file` to write memory profile")
 
@@ -132,7 +132,7 @@ func before(cmd *cobra.Command) error {
 	}
 
 	switch cmd.Use {
-	case "", "help", "version", "mount", "login", "logout":
+	case "", "help", "version", "mount":
 		return nil
 	}
 	unshare.MaybeReexecUsingUserNamespace(false)
@@ -220,7 +220,11 @@ func main() {
 	os.Setenv("TMPDIR", parse.GetTempDir())
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", err)
+		if logrus.IsLevelEnabled(logrus.TraceLevel) {
+			fmt.Fprintf(os.Stderr, "%+v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+		}
 		exitCode := cli.ExecErrorCodeGeneric
 		if ee, ok := (errors.Cause(err)).(*exec.ExitError); ok {
 			if w, ok := ee.Sys().(syscall.WaitStatus); ok {

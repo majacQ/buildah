@@ -63,13 +63,37 @@ load helpers
   # Check that with settings that don't require a user namespace, we can request to use a per-container network namespace.
   run_buildah run $RUNOPTS --net=container "$ctr" readlink /proc/self/ns/net
   if [[ $output == $mynetns ]]; then
-      expect_output "[output should not be '$mynetns']"
+      die "[/proc/self/ns/net (--net=container) should not be '$mynetns']"
   fi
 
   run_buildah run $RUNOPTS --net=private "$ctr" readlink /proc/self/ns/net
   if [[ $output == $mynetns ]]; then
-      expect_output "[output should not be '$mynetns']"
+      die "[/proc/self/ns/net (--net=private) should not be '$mynetns']"
   fi
+}
+
+# Helper for idmapping test: check UID or GID mapping
+# NOTE SIDE EFFECT: sets $rootxid for possible use by caller
+idmapping_check_map() {
+  local _output_idmap=$1
+  local _expect_idmap=$2
+  local _testname=$3
+
+  [ -n "$_output_idmap" ]
+  local _idmap=$(sed -E -e 's, +, ,g' -e 's,^ +,,g' <<< "${_output_idmap}")
+  expect_output --from="$_idmap" "${_expect_idmap}" "$_testname"
+
+  # SIDE EFFECT: Global: our caller may want this
+  rootxid=$(sed -E -e 's,^([^ ]*) (.*) ([^ ]*),\2,' <<< "$_idmap")
+}
+
+# Helper for idmapping test: check file permissions
+idmapping_check_permission() {
+  local _output_file_stat=$1
+  local _output_dir_stat=$2
+
+  expect_output --from="${_output_file_stat}" "1:1" "Check if a copied file gets the right permissions"
+  expect_output --from="${_output_dir_stat}" "0:0" "Check if a copied directory gets the right permissions"
 }
 
 @test "idmapping" {
@@ -155,6 +179,21 @@ load helpers
   chmod u+s ${TESTDIR}/somedir/someotherfile
 
   for i in $(seq 0 "$((${#uidmaps[*]}-1))") ; do
+    # local helper function for checking /proc/self/ns/user
+    function idmapping_check_namespace() {
+      local _output=$1
+      local _testname=$2
+
+      [ "$_output" != "" ]
+      if [ -z "${uidmapargs[$i]}${gidmapargs[$i]}" ]; then
+        if test "$BUILDAH_ISOLATION" != "chroot" -a "$BUILDAH_ISOLATION" != "rootless" ; then
+          expect_output --from="$_output" "$mynamespace" "/proc/self/ns/user ($_testname)"
+        fi
+      else
+        [ "$_output" != "$mynamespace" ]
+      fi
+    }
+
     # Create a container using these mappings.
     echo "Building container with --signature-policy ${TESTSDIR}/policy.json --quiet ${uidmapargs[$i]} ${gidmapargs[$i]} alpine"
     _prefetch alpine
@@ -163,55 +202,71 @@ load helpers
 
     # If we specified mappings, expect to be in a different namespace by default.
     run_buildah run $RUNOPTS "$ctr" readlink /proc/self/ns/user
-    [ "$output" != "" ]
-    case x"${uidmapargs[$i]}""${gidmapargs[$i]}" in
-    x)
-      if test "$BUILDAH_ISOLATION" != "chroot" -a "$BUILDAH_ISOLATION" != "rootless" ; then
-        expect_output "$mynamespace"
-      fi
-      ;;
-    *)
-      [ "$output" != "$mynamespace" ]
-      ;;
-    esac
-    # Check that we got the mappings that we expected.
+    idmapping_check_namespace "$output" "container"
+    # Check that we got the UID and GID mappings that we expected.
+    # rootuid/rootgid are obtained (side effect) from helper function
     run_buildah run $RUNOPTS "$ctr" cat /proc/self/uid_map
-    [ "$output" != "" ]
-    uidmap=$(sed -E -e 's, +, ,g' -e 's,^ +,,g' <<< "$output")
+    idmapping_check_map "$output" "${uidmaps[$i]}" "uid_map"
+    rootuid=$rootxid
+
     run_buildah run $RUNOPTS "$ctr" cat /proc/self/gid_map
-    [ "$output" != "" ]
-    gidmap=$(sed -E -e 's, +, ,g' -e 's,^ +,,g' <<< "$output")
-    echo With settings "$map", expected UID map "${uidmaps[$i]}", got UID map "${uidmap}", expected GID map "${gidmaps[$i]}", got GID map "${gidmap}".
-    expect_output --from="$uidmap" "${uidmaps[$i]}"
-    expect_output --from="$gidmap" "${gidmaps[$i]}"
-    rootuid=$(sed -E -e 's,^([^ ]*) (.*) ([^ ]*),\2,' <<< "$uidmap")
-    rootgid=$(sed -E -e 's,^([^ ]*) (.*) ([^ ]*),\2,' <<< "$gidmap")
+    idmapping_check_map "$output" "${gidmaps[$i]}" "gid_map"
+    rootgid=$rootxid
 
     # Check that if we copy a file into the container, it gets the right permissions.
     run_buildah copy --chown 1:1 "$ctr" ${TESTDIR}/somefile /
     run_buildah run $RUNOPTS "$ctr" stat -c '%u:%g' /somefile
-    expect_output "1:1"
-
+    output_file_stat="$output"
     # Check that if we copy a directory into the container, its contents get the right permissions.
     run_buildah copy "$ctr" ${TESTDIR}/somedir /somedir
     run_buildah run $RUNOPTS "$ctr" stat -c '%u:%g' /somedir
-    expect_output "0:0"
+    output_dir_stat="$output"
+    idmapping_check_permission "$output_file_stat" "$output_dir_stat"
+
+    run_buildah run $RUNOPTS "$ctr" stat -c '%u:%g %a' /somedir/someotherfile
+    expect_output "0:0 4700" "stat(someotherfile), in container test"
+
+    # Check that the copied file has the right permissions on host.
     run_buildah mount "$ctr"
     mnt="$output"
     run stat -c '%u:%g %a' "$mnt"/somedir/someotherfile
     [ $status -eq 0 ]
     expect_output "$rootuid:$rootgid 4700"
-    run_buildah run $RUNOPTS "$ctr" stat -c '%u:%g %a' /somedir/someotherfile
-    expect_output "0:0 4700"
 
     # Check that a container with mapped-layer can be committed.
     run_buildah commit "$ctr" localhost/alpine-working:$i
+
+
+    # Also test bud command
+    # Build an image using these mappings.
+    echo "Building image with ${uidmapargs[$i]} ${gidmapargs[$i]}"
+    run_buildah bud ${uidmapargs[$i]} ${gidmapargs[$i]} $RUNOPTS --signature-policy ${TESTSDIR}/policy.json \
+                    -t localhost/alpine-bud:$i -f ${TESTSDIR}/bud/namespaces/Containerfile $TESTDIR
+    # If we specified mappings, expect to be in a different namespace by default.
+    output_namespace="$(grep -A1 'ReadlinkResult' <<< "$output" | tail -n1)"
+    idmapping_check_namespace "${output_namespace}" "bud"
+    # Check that we got the mappings that we expected.
+    output_uidmap="$(grep -A1 'UidMapResult' <<< "$output" | tail -n1)"
+    output_gidmap="$(grep -A1 'GidMapResult' <<< "$output" | tail -n1)"
+    idmapping_check_map "$output_uidmap" "${uidmaps[$i]}" "UidMapResult"
+    idmapping_check_map "$output_gidmap" "${gidmaps[$i]}" "GidMapResult"
+
+    # Check that if we copy a file into the container, it gets the right permissions.
+    output_file_stat="$(grep -A1 'StatSomefileResult' <<< "$output" | tail -n1)"
+    # Check that if we copy a directory into the container, its contents get the right permissions.
+    output_dir_stat="$(grep -A1 'StatSomedirResult' <<< "$output" | tail -n1)"
+    output_otherfile_stat="$(grep -A1 'StatSomeotherfileResult' <<< "$output" | tail -n1)"
+    # bud strips suid.
+    idmapping_check_permission "$output_file_stat" "$output_dir_stat"
+    expect_output --from="${output_otherfile_stat}" "0:0 700" "stat(someotherfile), in bud test"
   done
 }
 
 general_namespace() {
   mkdir -p $TESTDIR/no-cni-configs
   RUNOPTS="--cni-config-dir=${TESTDIR}/no-cni-configs ${RUNC_BINARY:+--runtime $RUNC_BINARY}"
+  mytmpdir=$TESTDIR/my-dir
+  mkdir -p ${mytmpdir}
 
   # The name of the /proc/self/ns/$link.
   nstype="$1"
@@ -254,27 +309,44 @@ general_namespace() {
       ;;
     esac
 
-    if [ "$nsflag" = "userns" ]; then
-      # "run" doesn't have --userns option.
-      continue
+    # "run" doesn't have --userns option.
+    if [ "$nsflag" != "userns" ]; then
+      for different in ${types[@]} ; do
+        # Check that, if we override it, we get what we specify for "run".
+       run_buildah run $RUNOPTS --"$nsflag"=$different "$ctr" readlink /proc/self/ns/"$nstype"
+        [ "$output" != "" ]
+        case "$different" in
+        ""|container|private)
+          [ "$output" != "$mynamespace" ]
+          ;;
+       host)
+          expect_output "$mynamespace"
+          ;;
+        /*)
+          expect_output "$(readlink $different)"
+          ;;
+        esac
+     done
     fi
 
-    for different in ${types[@]} ; do
-      # Check that, if we override it, we get what we specify for "run".
-      run_buildah run $RUNOPTS --"$nsflag"=$different "$ctr" readlink /proc/self/ns/"$nstype"
-      [ "$output" != "" ]
-      case "$different" in
-      ""|container|private)
-        [ "$output" != "$mynamespace" ]
-        ;;
-      host)
-        expect_output "$mynamespace"
-        ;;
-      /*)
-        expect_output "$(readlink $different)"
-        ;;
-      esac
-    done
+    # Also check "from" command
+  cat > $mytmpdir/Containerfile << _EOF
+FROM alpine
+RUN echo "TargetOutput" && readlink /proc/self/ns/$nstype
+_EOF
+    run_buildah bud --"$nsflag"=$namespace $RUNOPTS --signature-policy ${TESTSDIR}/policy.json --file ${mytmpdir} .
+    result=$(grep -A1 "TargetOutput" <<< "$output" | tail -n1)
+    case "$namespace" in
+    ""|container|private)
+      [ "$result" != "$mynamespace" ]
+      ;;
+    host)
+      expect_output --from="$result" "$mynamespace"
+      ;;
+    /*)
+      expect_output --from="$result" "$(readlink $namespace)"
+      ;;
+    esac
 
   done
 }

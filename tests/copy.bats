@@ -261,9 +261,20 @@ load helpers
 
 @test "ignore-socket" {
   createrandom ${TESTDIR}/randomfile
+  # This seems to be the least-worst way to create a socket: run and kill nc
   nc -lkU ${TESTDIR}/test.socket &
-  while ! test -e ${TESTDIR}/test.socket; do sleep 0.1; done
-  kill $!
+  nc_pid=$!
+  # This should succeed fairly quickly. We test with a timeout in case of
+  # failure (likely reason: 'nc' not installed.)
+  retries=50
+  while ! test -e ${TESTDIR}/test.socket; do
+      sleep 0.1
+      retries=$((retries - 1))
+      if [[ $retries -eq 0 ]]; then
+          die "Timed out waiting for ${TESTDIR}/test.socket (is nc installed?)"
+      fi
+  done
+  kill $nc_pid
 
   run_buildah from --signature-policy ${TESTSDIR}/policy.json scratch
   cid=$output
@@ -379,6 +390,23 @@ stuff/mystuff"
   croot=$output
   cmp ${TESTDIR}/randomfile ${croot}/tmp/random
   cmp ${TESTDIR}/randomfile ${croot}/tmp/random2
+}
+
+@test "copy-container-root" {
+  _prefetch busybox
+  createrandom ${TESTDIR}/randomfile
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  from=$output
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+  run_buildah copy --quiet $from ${TESTDIR}/randomfile /tmp/random
+  expect_output ""
+  run_buildah copy --quiet --signature-policy ${TESTSDIR}/policy.json --from $from $cid / /tmp/
+  expect_output "" || \
+    expect_output --substring "copier: file disappeared while reading"
+  run_buildah mount $cid
+  croot=$output
+  cmp ${TESTDIR}/randomfile ${croot}/tmp/tmp/random
 }
 
 @test "copy-from-image" {
