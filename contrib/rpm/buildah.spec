@@ -26,7 +26,7 @@
 
 Name:           buildah
 # Bump version in buildah.go too
-Version:        1.8.4
+Version:        1.9.0
 Release:        1.git%{shortcommit}%{?dist}
 Summary:        A command line tool used to creating OCI Images
 License:        ASL 2.0
@@ -100,7 +100,13 @@ make DESTDIR=%{buildroot} PREFIX=%{_prefix} install install.completions
 %{_datadir}/bash-completion/completions/*
 
 %changelog
+  <<<<<<< release-1.8
 * Tue Jun 04, 2019 Tom Sweeney <tsweeney@redhat.com> 1.8.4-1
+  =======
+* Tue Jun 13, 2019 Dan Walsh <dwalsh@redhat.com> 1.9.0-dev-1
+
+* Tue Jun 13, 2019 Dan Walsh <dwalsh@redhat.com> 1.8.4
+  >>>>>>> release-1.9-rhel
 - Update containers/image to v2.0.0
 - run: fix hang with run and --isolation=chroot
 - run: fix hang when using run

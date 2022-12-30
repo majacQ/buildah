@@ -219,6 +219,7 @@ func (s *Source) ensureCachedDataIsPresentPrivate() error {
 		return err
 	}
 
+  <<<<<<< release-1.8
 	// Check to make sure length is 1
 	if len(tarManifest) != 1 {
 		return errors.Errorf("Unexpected tar manifest.json: expected 1 item, got %d", len(tarManifest))
@@ -232,6 +233,19 @@ func (s *Source) ensureCachedDataIsPresentPrivate() error {
 	if err := json.Unmarshal(configBytes, &parsedConfig); err != nil {
 		return errors.Wrapf(err, "Error decoding tar config %s", tarManifest[0].Config)
 	}
+  =======
+		// Read and parse config.
+		configBytes, err := s.readTarComponent(tarManifest[0].Config, iolimits.MaxConfigBodySize)
+		if err != nil {
+			s.cacheDataResult = err
+			return
+		}
+		var parsedConfig manifest.Schema2Image // There's a lot of info there, but we only really care about layer DiffIDs.
+		if err := json.Unmarshal(configBytes, &parsedConfig); err != nil {
+			s.cacheDataResult = errors.Wrapf(err, "Error decoding tar config %s", tarManifest[0].Config)
+			return
+		}
+  >>>>>>> release-1.9-rhel
 
 	knownLayers, err := s.prepareLayerData(&tarManifest[0], &parsedConfig)
 	if err != nil {
