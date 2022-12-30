@@ -18,6 +18,7 @@ import (
 const (
 	inspectTypeContainer = "container"
 	inspectTypeImage     = "image"
+	inspectTypeManifest  = "manifest"
 )
 
 type inspectResults struct {
@@ -84,18 +85,23 @@ func inspectCmd(c *cobra.Command, args []string, iopts inspectResults) error {
 		builder, err = openBuilder(ctx, store, name)
 		if err != nil {
 			if c.Flag("type").Changed {
-				return errors.Wrapf(err, "error reading build container %q", name)
+				return errors.Wrapf(err, "error reading build container")
 			}
 			builder, err = openImage(ctx, systemContext, store, name)
 			if err != nil {
-				return errors.Wrapf(err, "error reading build object %q", name)
+				if manifestErr := manifestInspect(ctx, store, systemContext, name); manifestErr == nil {
+					return nil
+				}
+				return err
 			}
 		}
 	case inspectTypeImage:
 		builder, err = openImage(ctx, systemContext, store, name)
 		if err != nil {
-			return errors.Wrapf(err, "error reading image %q", name)
+			return err
 		}
+	case inspectTypeManifest:
+		return manifestInspect(ctx, store, systemContext, name)
 	default:
 		return errors.Errorf("the only recognized types are %q and %q", inspectTypeContainer, inspectTypeImage)
 	}

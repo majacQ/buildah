@@ -69,7 +69,7 @@ The second container is now created and the `/bar` file will be created within i
 STEP 1: FROM onbuild-image
 STEP 2: RUN touch /bar    # Note /bar created here based on the ONBUILD in Dockerfile
 STEP 3: RUN touch /baz
-STEP 4: COMMIT containers-storage:[overlay@/var/lib/containers/storage+/var/run/containers/storage:overlay.override_kernel_check=true]localhost/result-image:latest
+STEP 4: COMMIT containers-storage:[overlay@/var/lib/containers/storage+/run/containers/storage:overlay.override_kernel_check=true]localhost/result-image:latest
 {output edited for brevity}
 $ container=$(sudo buildah from result-image:latest)
 # buildah run $container ls /bar /foo /baz
@@ -98,7 +98,7 @@ The onbuild-image has been created, so now create a container from it using the 
 STEP 1: FROM onbuild-image
 STEP 2: RUN touch /bar    # Note /bar created here based on the ONBUILD in Dockerfile
 STEP 3: RUN touch /baz
-STEP 4: COMMIT containers-storage:[overlay@/var/lib/containers/storage+/var/run/containers/storage:overlay.override_kernel_check=true]localhost/result-image:latest
+STEP 4: COMMIT containers-storage:[overlay@/var/lib/containers/storage+/run/containers/storage:overlay.override_kernel_check=true]localhost/result-image:latest
 {output edited for brevity}
 $ container=$(sudo buildah from result-image:latest)
 # buildah run $container ls /bar /foo /baz
@@ -185,7 +185,7 @@ Well done. You have learned about Buildah's ONBUILD functionality using this sho
 
 If you have any suggestions or issues please post them at the [Buildah Issues page](https://github.com/containers/buildah/issues).
 
-For more information on Buildah and how you might contribute please visit the [Buildah home page on Github](https://github.com/containers/buildah).
+For more information on Buildah and how you might contribute please visit the [Buildah home page on GitHub](https://github.com/containers/buildah).
 
 [GitHub]: https://github.com/containers/podman/
 [image specification]: https://github.com/opencontainers/runtime-spec

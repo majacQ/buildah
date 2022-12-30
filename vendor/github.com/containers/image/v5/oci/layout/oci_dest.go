@@ -186,7 +186,9 @@ func (d *ociImageDestination) PutBlob(ctx context.Context, stream io.Reader, inp
 // (e.g. if the blob is a filesystem layer, this signifies that the changes it describes need to be applied again when composing a filesystem tree).
 // info.Digest must not be empty.
 // If canSubstitute, TryReusingBlob can use an equivalent equivalent of the desired blob; in that case the returned info may not match the input.
-// If the blob has been successfully reused, returns (true, info, nil); info must contain at least a digest and size.
+// If the blob has been successfully reused, returns (true, info, nil); info must contain at least a digest and size, and may
+// include CompressionOperation and CompressionAlgorithm fields to indicate that a change to the compression type should be
+// reflected in the manifest that will be written.
 // If the transport can not reuse the requested blob, TryReusingBlob returns (false, {}, nil); it returns a non-nil error only on an unexpected failure.
 // May use and/or update cache.
 func (d *ociImageDestination) TryReusingBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache, canSubstitute bool) (bool, types.BlobInfo, error) {
@@ -204,6 +206,7 @@ func (d *ociImageDestination) TryReusingBlob(ctx context.Context, info types.Blo
 	if err != nil {
 		return false, types.BlobInfo{}, err
 	}
+
 	return true, types.BlobInfo{Digest: info.Digest, Size: finfo.Size()}, nil
 }
 
@@ -300,6 +303,9 @@ func (d *ociImageDestination) PutSignatures(ctx context.Context, signatures [][]
 }
 
 // Commit marks the process of storing the image as successful and asks for the image to be persisted.
+// unparsedToplevel contains data about the top-level manifest of the source (which may be a single-arch image or a manifest list
+// if PutManifest was only called for the single-arch image with instanceDigest == nil), primarily to allow lookups by the
+// original manifest list digest, if desired.
 // WARNING: This does not have any transactional semantics:
 // - Uploaded data MAY be visible to others before Commit() is called
 // - Uploaded data MAY be removed or MAY remain around if Close() is called without Commit() (i.e. rollback is allowed but not guaranteed)

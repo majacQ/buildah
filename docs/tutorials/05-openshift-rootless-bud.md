@@ -1,4 +1,4 @@
-![buildah logo](https://cdn.rawgit.com/containers/buildah/master/logos/buildah-logo_large.png)
+![buildah logo](https://cdn.rawgit.com/containers/buildah/main/logos/buildah-logo_large.png)
 
 # Buildah Tutorial 5
 ## Using Buildah to build images in a rootless OpenShift container
@@ -259,7 +259,7 @@ sh-5.0$ buildah info
 
 Now create some files for testing.
 
-This container test file excersises at least some of the critical parts of building an image (package update/installation, execution of commands, and use of volumes).
+This container test file exercises at least some of the critical parts of building an image (package update/installation, execution of commands, and use of volumes).
 
 ````console
 sh-5.0$ cat > test-script.sh <<EOF

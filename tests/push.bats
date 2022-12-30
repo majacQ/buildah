@@ -83,16 +83,16 @@ load helpers
   _prefetch busybox
   run_buildah pull --signature-policy ${TESTSDIR}/policy.json busybox
   run_buildah 125 push --signature-policy ${TESTSDIR}/policy.json busybox
-  expect_output --substring "docker://busybox"
+  expect_output --substring "busybox"
 }
 
-@test "push should fail with nonexist authfile" {
+@test "push should fail with nonexistent authfile" {
   _prefetch alpine
   run_buildah from --quiet --pull --signature-policy ${TESTSDIR}/policy.json alpine
   cid=$output
   run_buildah images -q
   imageid=$output
-  run_buildah 125 push --signature-policy ${TESTSDIR}/policy.json --authfile /tmp/nonexsit $imageid dir:${TESTDIR}/my-tmp-dir
+  run_buildah 125 push --signature-policy ${TESTSDIR}/policy.json --authfile /tmp/nonexistent $imageid dir:${TESTDIR}/my-tmp-dir
 }
 
 @test "push-denied-by-registry-sources" {
@@ -107,7 +107,6 @@ load helpers
 
   run_buildah pull --signature-policy ${TESTSDIR}/policy.json --quiet busybox
   run_buildah 125 push --signature-policy ${TESTSDIR}/policy.json busybox docker://registry.example.com/evenbusierbox
-  expect_output --substring 'push to registry at "registry.example.com" denied by policy: it is in the blocked registries list'
 
   export BUILD_REGISTRY_SOURCES='{"allowedRegistries": ["some-other-registry.example.com"]}'
 
@@ -118,7 +117,7 @@ load helpers
 
   run_buildah pull --signature-policy ${TESTSDIR}/policy.json --quiet busybox
   run_buildah 125 push --signature-policy ${TESTSDIR}/policy.json busybox docker://registry.example.com/evenbusierbox
-  expect_output --substring 'push to registry at "registry.example.com" denied by policy: not in allowed registries list'
+  expect_output --substring 'registry "registry.example.com" denied by policy: not in allowed registries list'
 }
 
 
@@ -140,10 +139,7 @@ load helpers
 }
 
 @test "buildah push image to docker and docker registry" {
-  run which docker
-  if [[ $status -ne 0 ]]; then
-    skip "docker is not installed"
-  fi
+  skip_if_no_docker
 
   _prefetch busybox
   run_buildah push --signature-policy ${TESTSDIR}/policy.json busybox docker-daemon:buildah/busybox:latest

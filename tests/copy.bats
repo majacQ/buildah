@@ -194,6 +194,48 @@ load helpers
   expect_output "nobody:root" "stat UG /subdir"
 }
 
+@test "copy --chmod" {
+  mkdir -p ${TESTDIR}/subdir
+  mkdir -p ${TESTDIR}/other-subdir
+  createrandom ${TESTDIR}/subdir/randomfile
+  createrandom ${TESTDIR}/subdir/other-randomfile
+  createrandom ${TESTDIR}/randomfile
+  createrandom ${TESTDIR}/other-subdir/randomfile
+  createrandom ${TESTDIR}/other-subdir/other-randomfile
+
+  _prefetch alpine
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json alpine
+  cid=$output
+  run_buildah config --workingdir / $cid
+  run_buildah copy --chmod 777 $cid ${TESTDIR}/randomfile
+  run_buildah copy --chmod 700 $cid ${TESTDIR}/randomfile /randomfile2
+  run_buildah copy --chmod 755 $cid ${TESTDIR}/randomfile /randomfile3
+  run_buildah copy --chmod 660 $cid ${TESTDIR}/subdir /subdir
+
+  run_buildah run $cid ls -l /randomfile
+  expect_output --substring rwxrwxrwx
+
+  run_buildah run $cid ls -l /randomfile2
+  expect_output --substring rwx------
+
+  run_buildah run $cid ls -l /randomfile3
+  expect_output --substring rwxr-xr-x
+
+  for i in randomfile other-randomfile ; do
+      run_buildah run $cid ls -l /subdir/$i
+      expect_output --substring rw-rw----
+  done
+
+  run_buildah run $cid ls -l /subdir
+  expect_output --substring rw-rw----
+
+  run_buildah copy --chmod 600 $cid ${TESTDIR}/other-subdir /subdir
+  for i in randomfile other-randomfile ; do
+      run_buildah run $cid ls -l /subdir/$i
+      expect_output --substring rw-------
+  done
+}
+
 @test "copy-symlink" {
   createrandom ${TESTDIR}/randomfile
   ln -s ${TESTDIR}/randomfile ${TESTDIR}/link-randomfile
@@ -215,6 +257,39 @@ load helpers
   test -s $newroot/link-randomfile
   test -f $newroot/link-randomfile
   cmp ${TESTDIR}/randomfile $newroot/link-randomfile
+}
+
+@test "ignore-socket" {
+  createrandom ${TESTDIR}/randomfile
+  # This seems to be the least-worst way to create a socket: run and kill nc
+  nc -lkU ${TESTDIR}/test.socket &
+  nc_pid=$!
+  # This should succeed fairly quickly. We test with a timeout in case of
+  # failure (likely reason: 'nc' not installed.)
+  retries=50
+  while ! test -e ${TESTDIR}/test.socket; do
+      sleep 0.1
+      retries=$((retries - 1))
+      if [[ $retries -eq 0 ]]; then
+          die "Timed out waiting for ${TESTDIR}/test.socket (is nc installed?)"
+      fi
+  done
+  kill $nc_pid
+
+  run_buildah from --signature-policy ${TESTSDIR}/policy.json scratch
+  cid=$output
+  run_buildah mount $cid
+  root=$output
+  run_buildah config --workingdir / $cid
+  run_buildah unmount $cid
+  run_buildah commit --signature-policy ${TESTSDIR}/policy.json $cid containers-storage:new-image
+  run_buildah rm $cid
+
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json new-image
+  newcid=$output
+  run_buildah mount $newcid
+  newroot=$output
+  test \! -e $newroot/test.socket
 }
 
 @test "copy-symlink-archive-suffix" {
@@ -249,4 +324,147 @@ load helpers
   echo COPY --from=builder /bin/-no-such-file-error- /usr/bin >> ${TESTDIR}/Dockerfile
   run_buildah 125 build-using-dockerfile --signature-policy ${TESTSDIR}/policy.json ${TESTDIR}
   expect_output --substring "no such file or directory"
+}
+
+@test "copy --ignore" {
+  mytest=${TESTDIR}/mytest
+  mkdir -p ${mytest}
+  touch ${mytest}/mystuff
+  touch ${mytest}/source.go
+  mkdir -p ${mytest}/notmystuff
+  touch ${mytest}/notmystuff/notmystuff
+  cat > ${mytest}/.ignore << _EOF
+*.go
+.ignore
+notmystuff
+_EOF
+
+expect="
+stuff
+stuff/mystuff"
+
+  run_buildah from --signature-policy ${TESTSDIR}/policy.json scratch
+  cid=$output
+
+  run_buildah 125 copy --ignorefile ${mytest}/.ignore $cid ${mytest} /stuff
+  expect_output -- "--ignore options requires that you specify a context dir using --contextdir" "container file list"
+
+  run_buildah copy --contextdir=${mytest} --ignorefile ${mytest}/.ignore $cid ${mytest} /stuff
+
+  run_buildah mount $cid
+  mnt=$output
+  run find $mnt -printf "%P\n"
+  filelist=$(LC_ALL=C sort <<<"$output")
+  run_buildah umount $cid
+  expect_output --from="$filelist" "$expect" "container file list"
+}
+
+@test "copy-quiet" {
+  createrandom ${TESTDIR}/randomfile
+  _prefetch alpine
+  run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
+  cid=$output
+  run_buildah mount $cid
+  root=$output
+  run_buildah copy --quiet $cid ${TESTDIR}/randomfile /
+  expect_output ""
+  cmp ${TESTDIR}/randomfile $root/randomfile
+  run_buildah umount $cid
+  run_buildah rm $cid
+}
+
+@test "copy-from-container" {
+  _prefetch busybox
+  createrandom ${TESTDIR}/randomfile
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  from=$output
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+  run_buildah copy --quiet $from ${TESTDIR}/randomfile /tmp/random
+  expect_output ""
+  run_buildah copy --quiet --signature-policy ${TESTSDIR}/policy.json --from $from $cid /tmp/random /tmp/random # absolute path
+  expect_output ""
+  run_buildah copy --quiet --signature-policy ${TESTSDIR}/policy.json --from $from $cid  tmp/random /tmp/random2 # relative path
+  expect_output ""
+  run_buildah mount $cid
+  croot=$output
+  cmp ${TESTDIR}/randomfile ${croot}/tmp/random
+  cmp ${TESTDIR}/randomfile ${croot}/tmp/random2
+}
+
+@test "copy-container-root" {
+  _prefetch busybox
+  createrandom ${TESTDIR}/randomfile
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  from=$output
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+  run_buildah copy --quiet $from ${TESTDIR}/randomfile /tmp/random
+  expect_output ""
+  run_buildah copy --quiet --signature-policy ${TESTSDIR}/policy.json --from $from $cid / /tmp/
+  expect_output "" || \
+    expect_output --substring "copier: file disappeared while reading"
+  run_buildah mount $cid
+  croot=$output
+  cmp ${TESTDIR}/randomfile ${croot}/tmp/tmp/random
+}
+
+@test "add-from-image" {
+  _prefetch busybox
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+  run_buildah add --signature-policy ${TESTSDIR}/policy.json --quiet --from ubuntu $cid /etc/passwd /tmp/passwd # should pull the image, absolute path
+  expect_output ""
+  run_buildah add --quiet --signature-policy ${TESTSDIR}/policy.json --from ubuntu $cid  etc/passwd /tmp/passwd2 # relative path
+  expect_output ""
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json ubuntu
+  ubuntu=$output
+  run_buildah mount $cid
+  croot=$output
+  run_buildah mount $ubuntu
+  ubuntu=$output
+  cmp $ubuntu/etc/passwd ${croot}/tmp/passwd
+  cmp $ubuntu/etc/passwd ${croot}/tmp/passwd2
+}
+
+@test "copy with .dockerignore" {
+  _prefetch alpine busybox
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json alpine
+  from=$output
+  run_buildah copy --contextdir=${TESTSDIR}/bud/dockerignore $from ${TESTSDIR}/bud/dockerignore ./
+
+  run_buildah 1 run $from ls -l test1.txt
+
+  run_buildah run $from ls -l test2.txt
+
+  run_buildah 1 run $from ls -l sub1.txt
+
+  run_buildah 1 run $from ls -l sub2.txt
+
+  run_buildah run $from ls -l subdir/sub1.txt
+
+  run_buildah 1 run $from ls -l subdir/sub2.txt
+}
+
+@test "copy-preserving-extended-attributes" {
+  createrandom ${TESTDIR}/randomfile
+  image="registry.fedoraproject.org/fedora-minimal"
+  _prefetch $image
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json $image
+  first="$output"
+  run_buildah run $first microdnf -y install /usr/bin/getfattr /usr/bin/setfattr /usr/sbin/setcap
+  run_buildah copy $first ${TESTDIR}/randomfile /
+  # set security.capability
+  run buildah run $first setcap cap_setuid=ep /randomfile
+  # set user.something
+  run buildah run $first setfattr user.yeah=butno /randomfile
+  # copy the file to a second container
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json $image
+  second="$output"
+  run_buildah copy --from $first $second /randomfile /
+  # compare what the extended attributes look like. if we're on a system with SELinux, there's a label in here, too
+  run buildah run $first sh -c "getfattr -d -m . --absolute-names /randomfile | sort"
+  expected="$output"
+  run buildah run $first sh -c "getfattr -d -m . --absolute-names /randomfile | sort"
+  expect_output "$expected"
 }

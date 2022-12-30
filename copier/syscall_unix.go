@@ -3,25 +3,26 @@
 package copier
 
 import (
-	"fmt"
 	"os"
+	"syscall"
 	"time"
 
+	"github.com/pkg/errors"
 	"golang.org/x/sys/unix"
 )
 
-var canChroot = true
+var canChroot = os.Getuid() == 0
 
 func chroot(root string) (bool, error) {
 	if canChroot {
 		if err := os.Chdir(root); err != nil {
-			return false, fmt.Errorf("error changing to intended-new-root directory %q: %v", root, err)
+			return false, errors.Wrapf(err, "error changing to intended-new-root directory %q", root)
 		}
 		if err := unix.Chroot(root); err != nil {
-			return false, fmt.Errorf("error chrooting to directory %q: %v", root, err)
+			return false, errors.Wrapf(err, "error chrooting to directory %q", root)
 		}
 		if err := os.Chdir(string(os.PathSeparator)); err != nil {
-			return false, fmt.Errorf("error changing to just-became-root directory %q: %v", root, err)
+			return false, errors.Wrapf(err, "error changing to just-became-root directory %q", root)
 		}
 		return true, nil
 	}
@@ -71,6 +72,21 @@ func lutimes(isSymlink bool, path string, atime, mtime time.Time) error {
 		}
 	}
 	return unix.Lutimes(path, []unix.Timeval{unix.NsecToTimeval(atime.UnixNano()), unix.NsecToTimeval(mtime.UnixNano())})
+}
+
+// sameDevice returns true unless we're sure that they're not on the same device
+func sameDevice(a, b os.FileInfo) bool {
+	aSys := a.Sys()
+	bSys := b.Sys()
+	if aSys == nil || bSys == nil {
+		return true
+	}
+	au, aok := aSys.(*syscall.Stat_t)
+	bu, bok := bSys.(*syscall.Stat_t)
+	if !aok || !bok {
+		return true
+	}
+	return au.Dev == bu.Dev
 }
 
 const (

@@ -14,9 +14,10 @@ import (
 
 	"github.com/containers/buildah"
 	"github.com/containers/image/v5/copy"
+	"github.com/containers/image/v5/directory"
+	"github.com/containers/image/v5/docker"
 	"github.com/containers/image/v5/signature"
 	"github.com/containers/image/v5/storage"
-	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
 	sstorage "github.com/containers/storage"
 	"github.com/containers/storage/pkg/reexec"
@@ -27,8 +28,7 @@ import (
 )
 
 const (
-	storageOptions = "--storage-driver vfs"
-	artifactDir    = "/tmp/.artifacts"
+	artifactDir = "/tmp/.artifacts"
 )
 
 var (
@@ -99,9 +99,9 @@ func BuildahCreate(tempDir string) BuildAhTest {
 	if os.Getenv("BUILDAH_BINARY") != "" {
 		buildAhBinary = os.Getenv("BUILDAH_BINARY")
 	}
-	storageOpts := storageOptions
-	if os.Getenv("STORAGE_OPTIONS") != "" {
-		storageOpts = os.Getenv("STORAGE_OPTIONS")
+	storageOpts := "--storage-driver vfs"
+	if os.Getenv("STORAGE_DRIVER") != "" {
+		storageOpts = fmt.Sprintf("--storage-driver %s", os.Getenv("STORAGE_DRIVER"))
 	}
 
 	return BuildAhTest{
@@ -112,7 +112,7 @@ func BuildahCreate(tempDir string) BuildAhTest {
 		ArtifactPath:   artifactDir,
 		TempDir:        tempDir,
 		SignaturePath:  "../../tests/policy.json",
-		RegistriesConf: "../../registries.conf",
+		RegistriesConf: "../../tests/registries.conf",
 	}
 }
 
@@ -201,7 +201,6 @@ func (p *BuildAhTest) SystemExec(command string, args []string) *BuildAhSession 
 
 // CreateArtifact creates a cached image in the artifact dir
 func (p *BuildAhTest) CreateArtifact(image string) error {
-	imageName := fmt.Sprintf("docker://%s", image)
 	systemContext := types.SystemContext{
 		SignaturePolicyPath: p.SignaturePath,
 	}
@@ -218,16 +217,16 @@ func (p *BuildAhTest) CreateArtifact(image string) error {
 	}()
 	options := &copy.Options{}
 
-	importRef, err := alltransports.ParseImageName(imageName)
+	importRef, err := docker.ParseReference("//" + image)
 	if err != nil {
 		return errors.Errorf("error parsing image name %v: %v", image, err)
 	}
 
 	imageDir := strings.Replace(image, "/", "_", -1)
-	exportTo := filepath.Join("dir:", p.ArtifactPath, imageDir)
-	exportRef, err := alltransports.ParseImageName(exportTo)
+	exportDir := filepath.Join(p.ArtifactPath, imageDir)
+	exportRef, err := directory.NewReference(exportDir)
 	if err != nil {
-		return errors.Errorf("error parsing image name %v: %v", exportTo, err)
+		return errors.Errorf("error creating image reference for %v: %v", exportDir, err)
 	}
 
 	_, err = copy.Image(context.Background(), policyContext, exportRef, importRef, options)
@@ -237,8 +236,10 @@ func (p *BuildAhTest) CreateArtifact(image string) error {
 // RestoreArtifact puts the cached image into our test store
 func (p *BuildAhTest) RestoreArtifact(image string) error {
 	storeOptions, _ := sstorage.DefaultStoreOptions(false, 0)
-	storeOptions.GraphDriverName = "vfs"
-	//storeOptions.GraphDriverOptions = storageOptions
+	storeOptions.GraphDriverName = os.Getenv("STORAGE_DRIVER")
+	if storeOptions.GraphDriverName == "" {
+		storeOptions.GraphDriverName = "vfs"
+	}
 	storeOptions.GraphRoot = p.Root
 	storeOptions.RunRoot = p.RunRoot
 	store, err := sstorage.GetStore(storeOptions)
@@ -258,10 +259,10 @@ func (p *BuildAhTest) RestoreArtifact(image string) error {
 	}
 
 	imageDir := strings.Replace(image, "/", "_", -1)
-	importFrom := fmt.Sprintf("dir:%s", filepath.Join(p.ArtifactPath, imageDir))
-	importRef, err := alltransports.ParseImageName(importFrom)
+	importDir := filepath.Join(p.ArtifactPath, imageDir)
+	importRef, err := directory.NewReference(importDir)
 	if err != nil {
-		return errors.Errorf("error parsing image name %v: %v", image, err)
+		return errors.Errorf("error creating image reference for %v: %v", image, err)
 	}
 	systemContext := types.SystemContext{
 		SignaturePolicyPath: p.SignaturePath,
@@ -279,7 +280,7 @@ func (p *BuildAhTest) RestoreArtifact(image string) error {
 	}()
 	_, err = copy.Image(context.Background(), policyContext, ref, importRef, options)
 	if err != nil {
-		return errors.Errorf("error importing %s: %v", importFrom, err)
+		return errors.Errorf("error importing %s: %v", importDir, err)
 	}
 	return nil
 }
@@ -296,7 +297,7 @@ func (p *BuildAhTest) RestoreAllArtifacts() error {
 
 //LineInOutputStartsWith returns true if a line in a
 // session output starts with the supplied string
-func (s *BuildAhSession) LineInOuputStartsWith(term string) bool {
+func (s *BuildAhSession) LineInOutputStartsWith(term string) bool {
 	for _, i := range s.OutputToStringArray() {
 		if strings.HasPrefix(i, term) {
 			return true
@@ -307,7 +308,7 @@ func (s *BuildAhSession) LineInOuputStartsWith(term string) bool {
 
 //LineInOutputContains returns true if a line in a
 // session output starts with the supplied string
-func (s *BuildAhSession) LineInOuputContains(term string) bool {
+func (s *BuildAhSession) LineInOutputContains(term string) bool {
 	for _, i := range s.OutputToStringArray() {
 		if strings.Contains(i, term) {
 			return true

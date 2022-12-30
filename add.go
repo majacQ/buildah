@@ -10,16 +10,19 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/containers/buildah/copier"
+	"github.com/containers/buildah/define"
 	"github.com/containers/buildah/pkg/chrootuser"
 	"github.com/containers/storage/pkg/fileutils"
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/hashicorp/go-multierror"
+	"github.com/opencontainers/runc/libcontainer/userns"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -27,6 +30,8 @@ import (
 
 // AddAndCopyOptions holds options for add and copy commands.
 type AddAndCopyOptions struct {
+	//Chmod sets the access permissions of the destination content.
+	Chmod string
 	// Chown is a spec for the user who should be given ownership over the
 	// newly-added content, potentially overriding permissions which would
 	// otherwise be set to 0:0.
@@ -50,7 +55,7 @@ type AddAndCopyOptions struct {
 	// ID mapping options to use when contents to be copied are part of
 	// another container, and need ownerships to be mapped from the host to
 	// that container's values before copying them into the container.
-	IDMappingOptions *IDMappingOptions
+	IDMappingOptions *define.IDMappingOptions
 	// DryRun indicates that the content should be digested, but not actually
 	// copied into the container.
 	DryRun bool
@@ -71,7 +76,11 @@ func sourceIsRemote(source string) bool {
 }
 
 // getURL writes a tar archive containing the named content
+  <<<<<<< release-1.17
 func getURL(src string, chown *idtools.IDPair, mountpoint, renameTarget string, writer io.Writer) error {
+  =======
+func getURL(src string, chown *idtools.IDPair, mountpoint, renameTarget string, writer io.Writer, chmod *os.FileMode) error {
+  >>>>>>> release-1.22
 	url, err := url.Parse(src)
 	if err != nil {
 		return err
@@ -128,13 +137,24 @@ func getURL(src string, chown *idtools.IDPair, mountpoint, renameTarget string, 
 		uid = chown.UID
 		gid = chown.GID
 	}
+  <<<<<<< release-1.17
+  =======
+	var mode int64 = 0600
+	if chmod != nil {
+		mode = int64(*chmod)
+	}
+  >>>>>>> release-1.22
 	hdr := tar.Header{
 		Typeflag: tar.TypeReg,
 		Name:     name,
 		Size:     size,
 		Uid:      uid,
 		Gid:      gid,
+  <<<<<<< release-1.17
 		Mode:     0600,
+  =======
+		Mode:     mode,
+  >>>>>>> release-1.22
 		ModTime:  date,
 	}
 	err = tw.WriteHeader(&hdr)
@@ -215,7 +235,7 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 		}
 		localSourceStats, err = copier.Stat(contextDir, contextDir, statOptions, localSources)
 		if err != nil {
-			return errors.Wrapf(err, "error checking on sources %v under %q", localSources, contextDir)
+			return errors.Wrapf(err, "checking on sources under %q", contextDir)
 		}
 	}
 	numLocalSourceItems := 0
@@ -229,10 +249,10 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 			if strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 				errorText = fmt.Sprintf("possible escaping context directory error: %s", errorText)
 			}
-			return errors.Errorf("error checking on source %v under %q: %v", localSourceStat.Glob, contextDir, errorText)
+			return errors.Errorf("checking on sources under %q: %v", contextDir, errorText)
 		}
 		if len(localSourceStat.Globbed) == 0 {
-			return errors.Wrapf(syscall.ENOENT, "error checking on source %v under %q: no glob matches", localSourceStat.Glob, contextDir)
+			return errors.Wrapf(syscall.ENOENT, "checking source under %q: no glob matches", contextDir)
 		}
 		numLocalSourceItems += len(localSourceStat.Globbed)
 	}
@@ -242,15 +262,25 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 
 	// Find out which user (and group) the destination should belong to.
 	var chownDirs, chownFiles *idtools.IDPair
-	var user specs.User
+	var userUID, userGID uint32
 	if options.Chown != "" {
-		user, _, err = b.user(mountPoint, options.Chown)
+		userUID, userGID, err = b.userForCopy(mountPoint, options.Chown)
 		if err != nil {
 			return errors.Wrapf(err, "error looking up UID/GID for %q", options.Chown)
 		}
 	}
-	chownDirs = &idtools.IDPair{UID: int(user.UID), GID: int(user.GID)}
-	chownFiles = &idtools.IDPair{UID: int(user.UID), GID: int(user.GID)}
+	var chmodDirsFiles *os.FileMode
+	if options.Chmod != "" {
+		p, err := strconv.ParseUint(options.Chmod, 8, 32)
+		if err != nil {
+			return errors.Wrapf(err, "error parsing chmod %q", options.Chmod)
+		}
+		perm := os.FileMode(p)
+		chmodDirsFiles = &perm
+	}
+
+	chownDirs = &idtools.IDPair{UID: int(userUID), GID: int(userGID)}
+	chownFiles = &idtools.IDPair{UID: int(userUID), GID: int(userGID)}
 	if options.Chown == "" && options.PreserveOwnership {
 		chownDirs = nil
 		chownFiles = nil
@@ -268,7 +298,7 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 			destination = tmpDestination
 		}
 	}
-	destMustBeDirectory := (len(sources) > 1) || strings.HasSuffix(destination, string(os.PathSeparator))
+	destMustBeDirectory := (len(sources) > 1) || strings.HasSuffix(destination, string(os.PathSeparator)) || destination == b.WorkDir()
 	destCanBeFile := false
 	if len(sources) == 1 {
 		if len(remoteSources) == 1 {
@@ -302,6 +332,13 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 		renameTarget = filepath.Base(extractDirectory)
 		extractDirectory = filepath.Dir(extractDirectory)
 	}
+
+	// if the destination is a directory that doesn't yet exist, let's copy it.
+	newDestDirFound := false
+	if (len(destStats) == 1 || len(destStats[0].Globbed) == 0) && destMustBeDirectory && !destCanBeFile {
+		newDestDirFound = true
+	}
+
 	if len(destStats) == 1 && len(destStats[0].Globbed) == 1 && destStats[0].Results[destStats[0].Globbed[0]].IsRegular {
 		if destMustBeDirectory {
 			return errors.Errorf("destination %v already exists but is not a directory", destination)
@@ -316,13 +353,33 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 		return errors.Wrapf(err, "error processing excludes list %v", options.Excludes)
 	}
 
-	// Copy each source in turn.
+	// Make sure that, if it's a symlink, we'll chroot to the target of the link;
+	// knowing that target requires that we resolve it within the chroot.
+	evalOptions := copier.EvalOptions{}
+	evaluated, err := copier.Eval(mountPoint, extractDirectory, evalOptions)
+	if err != nil {
+		return errors.Wrapf(err, "error checking on destination %v", extractDirectory)
+	}
+	extractDirectory = evaluated
+
+	// Set up ID maps.
 	var srcUIDMap, srcGIDMap []idtools.IDMap
 	if options.IDMappingOptions != nil {
 		srcUIDMap, srcGIDMap = convertRuntimeIDMaps(options.IDMappingOptions.UIDMap, options.IDMappingOptions.GIDMap)
 	}
 	destUIDMap, destGIDMap := convertRuntimeIDMaps(b.IDMappingOptions.UIDMap, b.IDMappingOptions.GIDMap)
 
+	// Create the target directory if it doesn't exist yet.
+	mkdirOptions := copier.MkdirOptions{
+		UIDMap:   destUIDMap,
+		GIDMap:   destGIDMap,
+		ChownNew: chownDirs,
+	}
+	if err := copier.Mkdir(mountPoint, extractDirectory, mkdirOptions); err != nil {
+		return errors.Wrapf(err, "error ensuring target directory exists")
+	}
+
+	// Copy each source in turn.
 	for _, src := range sources {
 		var multiErr *multierror.Error
 		var getErr, closeErr, renameErr, putErr error
@@ -331,7 +388,11 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 			pipeReader, pipeWriter := io.Pipe()
 			wg.Add(1)
 			go func() {
+  <<<<<<< release-1.17
 				getErr = getURL(src, chownFiles, mountPoint, renameTarget, pipeWriter)
+  =======
+				getErr = getURL(src, chownFiles, mountPoint, renameTarget, pipeWriter, chmodDirsFiles)
+  >>>>>>> release-1.22
 				pipeWriter.Close()
 				wg.Done()
 			}()
@@ -347,14 +408,24 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 					_, putErr = io.Copy(hasher, pipeReader)
 				} else {
 					putOptions := copier.PutOptions{
+  <<<<<<< release-1.17
 						UIDMap:     destUIDMap,
 						GIDMap:     destGIDMap,
 						ChownDirs:  nil,
 						ChmodDirs:  nil,
 						ChownFiles: nil,
 						ChmodFiles: nil,
+  =======
+						UIDMap:        destUIDMap,
+						GIDMap:        destGIDMap,
+						ChownDirs:     nil,
+						ChmodDirs:     nil,
+						ChownFiles:    nil,
+						ChmodFiles:    nil,
+						IgnoreDevices: userns.RunningInUserNS(),
+  >>>>>>> release-1.22
 					}
-					putErr = copier.Put(mountPoint, extractDirectory, putOptions, io.TeeReader(pipeReader, hasher))
+					putErr = copier.Put(extractDirectory, extractDirectory, putOptions, io.TeeReader(pipeReader, hasher))
 				}
 				hashCloser.Close()
 				pipeReader.Close()
@@ -386,7 +457,7 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 			}
 		}
 		if localSourceStat == nil {
-			return errors.Errorf("internal error: should have statted %s, but we didn't?", src)
+			continue
 		}
 
 		// Iterate through every item that matched the glob.
@@ -412,6 +483,11 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 					globInfo := localSourceStat.Results[glob]
 					if !globInfo.IsDir || !includeDirectoryAnyway(rel, pm) {
 						continue
+					}
+				} else {
+					// if the destination is a directory that doesn't yet exist, and is not excluded, let's copy it.
+					if newDestDirFound {
+						itemsCopied++
 					}
 				}
 			} else {
@@ -444,9 +520,9 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 					Excludes:       options.Excludes,
 					ExpandArchives: extract,
 					ChownDirs:      chownDirs,
-					ChmodDirs:      nil,
+					ChmodDirs:      chmodDirsFiles,
 					ChownFiles:     chownFiles,
-					ChmodFiles:     nil,
+					ChmodFiles:     chmodDirsFiles,
 					StripSetuidBit: options.StripSetuidBit,
 					StripSetgidBit: options.StripSetgidBit,
 					StripStickyBit: options.StripStickyBit,
@@ -482,8 +558,9 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 						ChmodDirs:       nil,
 						ChownFiles:      nil,
 						ChmodFiles:      nil,
+						IgnoreDevices:   userns.RunningInUserNS(),
 					}
-					putErr = copier.Put(mountPoint, extractDirectory, putOptions, io.TeeReader(pipeReader, hasher))
+					putErr = copier.Put(extractDirectory, extractDirectory, putOptions, io.TeeReader(pipeReader, hasher))
 				}
 				hashCloser.Close()
 				pipeReader.Close()
@@ -517,8 +594,9 @@ func (b *Builder) Add(destination string, extract bool, options AddAndCopyOption
 	return nil
 }
 
-// user returns the user (and group) information which the destination should belong to.
-func (b *Builder) user(mountPoint string, userspec string) (specs.User, string, error) {
+// userForRun returns the user (and group) information which we should use for
+// running commands
+func (b *Builder) userForRun(mountPoint string, userspec string) (specs.User, string, error) {
 	if userspec == "" {
 		userspec = b.User()
 	}
@@ -541,4 +619,50 @@ func (b *Builder) user(mountPoint string, userspec string) (specs.User, string, 
 
 	}
 	return u, homeDir, err
+}
+
+// userForCopy returns the user (and group) information which we should use for
+// setting ownership of contents being copied.  It's just like what
+// userForRun() does, except for the case where we're passed a single numeric
+// value, where we need to use that value for both the UID and the GID.
+func (b *Builder) userForCopy(mountPoint string, userspec string) (uint32, uint32, error) {
+	var (
+		user, group string
+		uid, gid    uint64
+		err         error
+	)
+
+	split := strings.SplitN(userspec, ":", 2)
+	user = split[0]
+	if len(split) > 1 {
+		group = split[1]
+	}
+
+	// If userspec did not specify any values for user or group, then fail
+	if user == "" && group == "" {
+		return 0, 0, errors.Errorf("can't find uid for user %s", userspec)
+	}
+
+	// If userspec specifies values for user or group, check for numeric values
+	// and return early.  If not, then translate username/groupname
+	if user != "" {
+		uid, err = strconv.ParseUint(user, 10, 32)
+	}
+	if err == nil {
+		// default gid to uid
+		gid = uid
+		if group != "" {
+			gid, err = strconv.ParseUint(group, 10, 32)
+		}
+	}
+	// If err != nil, then user or group not numeric, check filesystem
+	if err == nil {
+		return uint32(uid), uint32(gid), nil
+	}
+
+	owner, _, err := b.userForRun(mountPoint, userspec)
+	if err != nil {
+		return 0xffffffff, 0xffffffff, err
+	}
+	return owner.UID, owner.GID, nil
 }

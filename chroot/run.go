@@ -20,6 +20,7 @@ import (
 	"unsafe"
 
 	"github.com/containers/buildah/bind"
+	"github.com/containers/buildah/copier"
 	"github.com/containers/buildah/util"
 	"github.com/containers/storage/pkg/ioutils"
 	"github.com/containers/storage/pkg/mount"
@@ -893,7 +894,7 @@ func setCapabilities(spec *specs.Spec, keepCaps ...string) error {
 	capMap := map[capability.CapType][]string{
 		capability.BOUNDING:    spec.Process.Capabilities.Bounding,
 		capability.EFFECTIVE:   spec.Process.Capabilities.Effective,
-		capability.INHERITABLE: spec.Process.Capabilities.Inheritable,
+		capability.INHERITABLE: {},
 		capability.PERMITTED:   spec.Process.Capabilities.Permitted,
 		capability.AMBIENT:     spec.Process.Capabilities.Ambient,
 	}
@@ -1102,7 +1103,12 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 		}
 		subSys := filepath.Join(spec.Root.Path, m.Mountpoint)
 		if err := unix.Mount(m.Mountpoint, subSys, "bind", sysFlags, ""); err != nil {
-			logrus.Warningf("could not bind mount %q, skipping: %v", m.Mountpoint, err)
+			msg := fmt.Sprintf("could not bind mount %q, skipping: %v", m.Mountpoint, err)
+			if strings.HasPrefix(m.Mountpoint, "/sys") {
+				logrus.Infof(msg)
+			} else {
+				logrus.Warningf(msg)
+			}
 			continue
 		}
 		if err := makeReadOnly(subSys, sysFlags); err != nil {
@@ -1151,7 +1157,18 @@ func setupChrootBindMounts(spec *specs.Spec, bundlePath string) (undoBinds func(
 			}
 		}
 		target := filepath.Join(spec.Root.Path, m.Destination)
-		if _, err := os.Stat(target); err != nil {
+		// Check if target is a symlink
+		stat, err := os.Lstat(target)
+		// If target is a symlink, follow the link and ensure the destination exists
+		if err == nil && stat != nil && (stat.Mode()&os.ModeSymlink != 0) {
+			target, err = copier.Eval(spec.Root.Path, m.Destination, copier.EvalOptions{})
+			if err != nil {
+				return nil, errors.Wrapf(err, "evaluating symlink %q", target)
+			}
+			// Stat the destination of the evaluated symlink
+			_, err = os.Stat(target)
+		}
+		if err != nil {
 			// If the target can't be stat()ted, check the error.
 			if !os.IsNotExist(err) {
 				return undoBinds, errors.Wrapf(err, "error examining %q for mounting in mount namespace", target)

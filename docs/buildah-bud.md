@@ -20,7 +20,7 @@ The build context directory can be specified as the http(s) URL of an archive, g
 
 If no context directory is specified, then Buildah will assume the current working directory as build context, which should contain a Containerfile.
 
-Containerfiles ending with a ".in" suffix will be preprocessed via CPP(1).  This can be useful to decompose Containerfiles into several reusable parts that can be used via CPP's **#include** directive.  Notice, a Containerfile.in file can still be used by other tools when manually preprocessing them via `cpp -E`.
+Containerfiles ending with a ".in" suffix will be preprocessed via cpp(1).  This can be useful to decompose Containerfiles into several reusable parts that can be used via CPP's **#include** directive.  Notice, a Containerfile.in file can still be used by other tools when manually preprocessing them via `cpp -E`. Any comments ( Lines beginning with `#` ) in included Containerfile(s) that are not preprocess commands, will be printed as warnings during builds.
 
 When the URL is an archive, the contents of the URL is downloaded to a temporary location and extracted before execution.
 
@@ -44,12 +44,16 @@ Note: this information is not present in Docker image formats, so it is discarde
 
 **--arch**="ARCH"
 
-Set the ARCH of the image to the provided value instead of using the architecture of the host.
+Set the ARCH of the image to be pulled to the provided value instead of using the architecture of the host. (Examples: aarch64, arm, i686, ppc64le, s390x, x86_64)
 
 **--authfile** *path*
 
-Path of the authentication file. Default is ${XDG\_RUNTIME\_DIR}/containers/auth.json, which is set using `buildah login`.
+Path of the authentication file. Default is ${XDG_\RUNTIME\_DIR}/containers/auth.json. If XDG_RUNTIME_DIR is not set, the default is /run/containers/$UID/auth.json. This file is created using using `buildah login`.
+
 If the authorization state is not found there, $HOME/.docker/config.json is checked, which is set using `docker login`.
+
+Note: You can also override the default path of the authentication file by setting the REGISTRY\_AUTH\_FILE
+environment variable. `export REGISTRY_AUTH_FILE=path`
 
 **--build-arg** *arg=value*
 
@@ -58,9 +62,12 @@ instructions read from the Containerfiles in the same way that environment
 variables are, but which will not be added to environment variable list in the
 resulting image's configuration.
 
+Please refer to the [BUILD TIME VARIABLES](#build-time-variables) section for the
+list of variables that can be overridden within the Containerfile at run time.
+
 **--cache-from**
 
-Images to utilise as potential cache sources. Buildah does not currently support caching so this is a NOOP.
+Images to utilise as potential cache sources. Buildah does not currently support --cache-from so this is a NOOP.
 
 **--cap-add**=*CAP\_xxx*
 
@@ -111,9 +118,14 @@ network namespaces can be found.
 
 **--cpu-period**=*0*
 
-Limit the CPU CFS (Completely Fair Scheduler) period
+Set the CPU period for the Completely Fair Scheduler (CFS), which is a
+duration in microseconds. Once the container's CPU quota is used up, it will
+not be scheduled to run until the current period ends. Defaults to 100000
+microseconds.
 
-Limit the container's CPU usage. This flag tell the kernel to restrict the container's CPU usage to the period you specify.
+On some systems, changing the CPU limits may not be allowed for non-root
+users. For more details, see
+https://github.com/containers/podman/blob/main/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
 
 **--cpu-quota**=*0*
 
@@ -122,6 +134,10 @@ Limit the CPU CFS (Completely Fair Scheduler) quota
 Limit the container's CPU usage. By default, containers run with the full
 CPU resource. This flag tell the kernel to restrict the container's CPU usage
 to the quota you specify.
+
+On some systems, changing the CPU limits may not be allowed for non-root
+users. For more details, see
+https://github.com/containers/podman/blob/main/troubleshooting.md#26-running-containers-with-cpu-limits-fails-with-a-permissions-error
 
 **--cpu-shares**, **-c**=*0*
 
@@ -184,7 +200,18 @@ The [key[:passphrase]] to be used for decryption of images. Key can point to key
 
 **--device**=*device*
 
-Add a host device or devices under a directory to the container. The format is `<device-on-host>[:<device-on-container>][:<permissions>]` (e.g. --device=/dev/sdc:/dev/xvdc:rwm)
+Add a host device to the container. Optional *permissions* parameter
+can be used to specify device permissions, it is combination of
+**r** for read, **w** for write, and **m** for **mknod**(2).
+
+Example: **--device=/dev/sdc:/dev/xvdc:rwm**.
+
+Note: if _host_device_ is a symbolic link then it will be resolved first.
+The container will only store the major and minor numbers of the host device.
+
+Note: if the user only has access rights via a group, accessing the device
+from inside a rootless container will fail. The **crun**(1) runtime offers a
+workaround for this by adding the option **--annotation run.oci.keep_original_groups=1**.
 
 **--disable-compression**, **-D**
 Don't compress filesystem layers when building the image unless it is required
@@ -241,7 +268,16 @@ Recognized formats include *oci* (OCI image-spec v1.0, the default) and
 Note: You can also override the default format by setting the BUILDAH\_FORMAT
 environment variable.  `export BUILDAH_FORMAT=docker`
 
-**--http-proxy**
+**--from**
+
+Overrides the first `FROM` instruction within the Containerfile.  If there are multiple
+FROM instructions in a Containerfile, only the first is changed.
+
+**-h**, **--help**
+
+Print usage statement
+
+**--http-proxy**=true
 
 By default proxy environment variables are passed into the container if set
 for the buildah process.  This can be disabled by setting the `--http-proxy`
@@ -249,11 +285,13 @@ option to `false`.  The environment variables passed in include `http_proxy`,
 `https_proxy`, `ftp_proxy`, `no_proxy`, and also the upper case versions of
 those.
 
-Defaults to `true`
-
 **--iidfile** *ImageIDfile*
 
 Write the image ID to the file.
+
+**--ignorefile** *file*
+
+Path to an alternative .containerignore (.dockerignore) file.
 
 **--ipc** *how*
 
@@ -290,11 +328,17 @@ no limit in the number of jobs that run in parallel.
 
 Add an image *label* (e.g. label=*value*) to the image metadata. Can be used multiple times.
 
-**--loglevel** *number*
+Users can set a special LABEL **io.containers.capabilities=CAP1,CAP2,CAP3** in
+a Containerfile that specified the list of Linux capabilities required for the
+container to run properly. This label specified in a container image tells
+container engines, like Podman, to run the container with just these
+capabilities. The container engine launches the container with just the specified
+capabilities, as long as this list of capabilities is a subset of the default
+list.
 
-Adjust the logging level up or down.  Valid option values range from -2 to 3,
-with 3 being roughly equivalent to using the global *--log-level=debug* option, and
-values below 0 omitting even error messages which accompany fatal errors.
+If the specified capabilities are not in the default set, container engines
+should print an error message and will run the container with the default
+capabilities.
 
 **--layers** *bool-value*
 
@@ -307,6 +351,11 @@ environment variable. `export BUILDAH_LAYERS=true`
 
 Log output which would be sent to standard output and standard error to the
 specified file instead of to standard output and standard error.
+
+**--manifest** "manifest"
+
+Name of the manifest list to which the image will be added. Creates the manifest list
+if it does not exist. This option is useful for building multi architecture images.
 
 **--memory**, **-m**=""
 
@@ -336,7 +385,7 @@ Sets the configuration for network namespaces when handling `RUN` instructions.
 Valid _mode_ values are:
 
 - **none**: no networking;
-- **host**: use the Podman host network stack. Note: the host mode gives the container full access to local system services such as D-bus and is therefore considered insecure;
+- **host**: use the host network stack. Note: the host mode gives the container full access to local system services such as D-bus and is therefore considered insecure;
 - **ns:**_path_: path to a network namespace to join;
 - `private`: create a new namespace for the container (default)
 
@@ -344,16 +393,9 @@ Valid _mode_ values are:
 
 Do not use existing cached images for the container build. Build from the start with a new set of cached layers.
 
-**--timestamp** *seconds*
-
-Set the create timestamp to seconds since epoch to allow for deterministic builds (defaults to current time).
-By default, the created timestamp is changed and written into the image manifest with every commit,
-causing the image's sha256 hash to be different even if the sources are exactly the same otherwise.
-When --timestamp is set, the created timestamp is always set to the time specified and therefore not changed, allowing the image's sha256 to remain the same. All files committed to the layers of the image will be created with the timestamp.
-
 **--os**="OS"
 
-Set the OS of the image to the provided value instead of using the current operating system of the host.
+Set the OS of the image to be pulled instead of using the current operating system of the host.
 
 **--pid** *how*
 
@@ -420,9 +462,21 @@ consult the manpages of the selected container runtime.
 Note: Do not pass the leading `--` to the flag. To pass the runc flag `--log-format json`
 to buildah bud, the option given would be `--runtime-flag log-format=json`.
 
+**--secret**=**id=id,src=path**
+Pass secret information to be used in the Containerfile for building images
+in a safe way that will not end up stored in the final image, or be seen in other stages.
+The secret will be mounted in the container at the default location of `/run/secrets/id`.
+
+To later use the secret, use the --mount flag in a `RUN` instruction within a `Containerfile`:
+
+`RUN --mount=type=secret,id=mysecret cat /run/secrets/mysecret`
+
 **--security-opt**=[]
 
 Security Options
+
+  "apparmor=unconfined" : Turn off apparmor confinement for the container
+  "apparmor=your-profile" : Set the apparmor confinement profile for the container
 
   "label=user:USER"   : Set the label user for the container
   "label=role:ROLE"   : Set the label role for the container
@@ -434,18 +488,11 @@ Security Options
   "seccomp=unconfined" : Turn off seccomp confinement for the container
   "seccomp=profile.json :  White listed syscalls seccomp Json file to be used as a seccomp filter
 
-  "apparmor=unconfined" : Turn off apparmor confinement for the container
-  "apparmor=your-profile" : Set the apparmor confinement profile for the container
-
 **--shm-size**=""
 
 Size of `/dev/shm`. The format is `<number><unit>`. `number` must be greater than `0`.
 Unit is optional and can be `b` (bytes), `k` (kilobytes), `m`(megabytes), or `g` (gigabytes).
 If you omit the unit, the system uses bytes. If you omit the size entirely, the system uses `64m`.
-
-**--signature-policy** *path*
-
-Path to alternate signature policy file (intended for testing; not typically used).
 
 **--sign-by** *fingerprint*
 
@@ -453,7 +500,14 @@ Sign the built image using the GPG key that matches the specified fingerprint.
 
 **--squash**
 
-Squash all of the new image's layers (including those inherited from a base image) into a single new layer.
+Squash all of the image's new layers into a single new layer; any preexisting layers
+are not squashed.
+
+**--stdin**
+
+Pass stdin into the RUN containers. Sometime commands being RUN within a Containerfile
+want to request information from the user. For example apt asking for a confirmation for install.
+Use --stdin to be able to interact from the terminal during the build.
 
 **--tag**, **-t** *imageName*
 
@@ -467,9 +521,16 @@ Set the target build stage to build.  When building a Containerfile with multipl
 can be used to specify an intermediate build stage by name as the final stage for the resulting image.
 Commands after the target stage will be skipped.
 
+**--timestamp** *seconds*
+
+Set the create timestamp to seconds since epoch to allow for deterministic builds (defaults to current time).
+By default, the created timestamp is changed and written into the image manifest with every commit,
+causing the image's sha256 hash to be different even if the sources are exactly the same otherwise.
+When --timestamp is set, the created timestamp is always set to the time specified and therefore not changed, allowing the image's sha256 to remain the same. All files committed to the layers of the image will be created with the timestamp.
+
 **--tls-verify** *bool-value*
 
-Require HTTPS and verify certificates when talking to container registries (defaults to true).  TLS verification cannot be used when talking to an insecure registry.
+Require HTTPS and verification of certificates when talking to container registries (defaults to true).  TLS verification cannot be used when talking to an insecure registry.
 
 **--ulimit** *type*=*soft-limit*[:*hard-limit*]
 
@@ -516,6 +577,8 @@ suitable user name to use as the default setting for this option.
 
 Users can specify the maps directly using `--userns-uid-map` described in the buildah(1) man page.
 
+**NOTE:** When this option is specified by a rootless user, the specified mappings are relative to the rootless usernamespace in the container, rather than being relative to the host as it would be when run rootful.
+
 **--userns-gid-map-group** *group*
 
 Specifies that a GID mapping which should be used to set ownership, at the
@@ -529,6 +592,8 @@ suitable group name to use as the default setting for this option.
 
 Users can specify the maps directly using `--userns-gid-map` described in the buildah(1) man page.
 
+**NOTE:** When this option is specified by a rootless user, the specified mappings are relative to the rootless usernamespace in the container, rather than being relative to the host as it would be when run rootful.
+
 **--uts** *how*
 
 Sets the configuration for UTS namespaces when the handling `RUN` instructions.
@@ -538,6 +603,10 @@ that the UTS namespace in which `buildah` itself is being run should be reused,
 or it can be the path to a UTS namespace which is already in use by another
 process.
 
+**--variant**=""
+
+Set the architecture variant of the image to be pulled.
+
 **--volume**, **-v**[=*[HOST-DIR:CONTAINER-DIR[:OPTIONS]]*]
 
    Create a bind mount. If you specify, ` -v /HOST-DIR:/CONTAINER-DIR`, Buildah
@@ -545,6 +614,7 @@ process.
    container. The `OPTIONS` are a comma delimited list and can be: <sup>[[1]](#Footnote1)</sup>
 
    * [rw|ro]
+   * [U]
    * [z|Z|O]
    * [`[r]shared`|`[r]slave`|`[r]private`]
 
@@ -557,9 +627,17 @@ and bind mounts that into the container.
 You can specify multiple  **-v** options to mount one or more mounts to a
 container.
 
+  `Write Protected Volume Mounts`
+
 You can add the `:ro` or `:rw` suffix to a volume to mount it read-only or
 read-write mode, respectively. By default, the volumes are mounted read-write.
 See examples.
+
+  `Chowning Volume Mounts`
+
+By default, Buildah does not change the owner and group of source volume directories mounted into containers. If a container is created in a new user namespace, the UID and GID in the container may correspond to another UID and GID on the host.
+
+The `:U` suffix tells Buildah to use the correct host UID and GID based on the UID and GID within the container, to change the owner and group of the source volume.
 
   `Labeling Volume Mounts`
 
@@ -578,7 +656,7 @@ Only the current container can use a private volume.
 
   `Overlay Volume Mounts`
 
-   The `:O` flag tells Buildah to mount the directory from the host as a temporary storage using the Overlay file system. The `RUN` command containers are allowed to modify contents within the mountpoint and are stored in the container storage in a separate directory.  In Ovelay FS terms the source directory will be the lower, and the container storage directory will be the upper. Modifications to the mount point are destroyed when the `RUN` command finishes executing, similar to a tmpfs mount point.
+   The `:O` flag tells Buildah to mount the directory from the host as a temporary storage using the Overlay file system. The `RUN` command containers are allowed to modify contents within the mountpoint and are stored in the container storage in a separate directory.  In Overlay FS terms the source directory will be the lower, and the container storage directory will be the upper. Modifications to the mount point are destroyed when the `RUN` command finishes executing, similar to a tmpfs mount point.
 
   Any subsequent execution of `RUN` commands sees the original source directory content, any changes from previous RUN commands no longer exists.
 
@@ -610,7 +688,7 @@ Use `df <source-dir>` to determine the source mount and then use
 `findmnt -o TARGET,PROPAGATION <source-mount-dir>` to determine propagation
 properties of source mount, if `findmnt` utility is not available, the source mount point
 can be determined by looking at the mount entry in `/proc/self/mountinfo`. Look
-at `optional fields` and see if any propagaion properties are specified.
+at `optional fields` and see if any propagation properties are specified.
 `shared:X` means the mount is `shared`, `master:X` means the mount is `slave` and if
 nothing is there that means the mount is `private`. <sup>[[1]](#Footnote1)</sup>
 
@@ -620,6 +698,23 @@ example, to bind mount the source directory `/foo` do
 will convert /foo into a `shared` mount point.  The propagation properties of the source
 mount can be changed directly. For instance if `/` is the source mount for
 `/foo`, then use `mount --make-shared /` to convert `/` into a `shared` mount.
+
+## BUILD TIME VARIABLES
+
+The ENV instruction in a Containerfile can be used to define variable values.  When the image
+is built, the values will persist in the container image.  At times it is more convenient to
+change the values in the Containerfile via a command-line option rather than changing the
+values within the Containerfile itself.
+
+The following variables can be used in conjunction with the `--build-arg` option to override the
+corresponding values set in the Containerfile using the `ENV` instruction.
+
+  * HTTP_PROXY
+  * HTTPS_PROXY
+  * FTP_PROXY
+  * NO_PROXY
+
+Please refer to the [Using Build Time Variables](#using-build-time-variables) section of the Examples.
 
 ## EXAMPLE
 
@@ -651,7 +746,11 @@ buildah bud --memory 40m --cpu-period 10000 --cpu-quota 50000 --ulimit nofile=10
 
 buildah bud --security-opt label=level:s0:c100,c200 --cgroup-parent /path/to/cgroup/parent -t imageName .
 
+buildah bud --arch=arm --variant v7 -t imageName .
+
 buildah bud --volume /home/test:/myvol:ro,Z -t imageName .
+
+buildah bud -v /home/test:/myvol:z,U -t imageName .
 
 buildah bud -v /var/lib/dnf:/var/lib/dnf:O -t imageName .
 
@@ -664,6 +763,16 @@ buildah bud -f Containerfile --layers --force-rm -t imageName .
 buildah bud --no-cache --rm=false -t imageName .
 
 buildah bud --dns-search=example.com --dns=223.5.5.5 --dns-option=use-vc .
+
+buildah bud -f Containerfile.in -t imageName .
+
+### Building an multi-architecture image using a --manifest option (Requires emulation software)
+
+buildah bud --arch arm --manifest myimage /tmp/mysrc
+
+buildah bud --arch amd64 --manifest myimage /tmp/mysrc
+
+buildah bud --arch s390x --manifest myimage /tmp/mysrc
 
 ### Building an image using a URL
 
@@ -679,6 +788,11 @@ buildah bud --dns-search=example.com --dns=223.5.5.5 --dns-option=use-vc .
   buildah bud -f dev/Containerfile https://10.10.10.1/docker/context.tar.gz
 
   Note: supported compression formats are 'xz', 'bzip2', 'gzip' and 'identity' (no compression).
+
+### Using Build Time Variables
+#### Replace the value set for the HTTP_PROXY environment variable within the Containerfile.
+
+buildah bud --build-arg=HTTP_PROXY="http://127.0.0.1:8321"
 
 ## ENVIRONMENT
 
@@ -699,21 +813,20 @@ are stored while pulling and pushing images.  Defaults to '/var/tmp'.
 
 ## Files
 
-### `.dockerignore`
+### `.containerignore`/`.dockerignore`
 
-If the file .dockerignore exists in the context directory, `buildah bud` reads
-its contents. Buildah uses the content to exclude files and directories from
-the context directory, when executing COPY and ADD directives in the
-Containerfile/Dockerfile
+If the .containerignore/.dockerignore file exists in the context directory,
+`buildah bud` reads its contents. If both exist, then .containerignore is used.
+Use the `--ignorefile` flag to override the ignore file path location. Buildah uses the content to exclude files and directories from the context directory, when executing COPY and ADD directives in the Containerfile/Dockerfile
 
-Users can specify a series of Unix shell globals in a .dockerignore file to
-identify files/directories to exclude.
+Users can specify a series of Unix shell globals in a
+.containerignore/.dockerignore file to identify files/directories to exclude.
 
 Buildah supports a special wildcard string `**` which matches any number of
 directories (including zero). For example, **/*.go will exclude all files that
 end with .go that are found in all directories.
 
-Example .dockerignore file:
+Example .containerignore file:
 
 ```
 # exclude this content for image
@@ -732,7 +845,7 @@ Excludes files and directories starting with `output` from any directory.
 Excludes files named src and the directory src as well as any content in it.
 
 Lines starting with ! (exclamation mark) can be used to make exceptions to
-exclusions. The following is an example .dockerignore file that uses this
+exclusions. The following is an example .containerignore/.dockerignore file that uses this
 mechanism:
 ```
 *.doc
@@ -754,7 +867,7 @@ registries.conf is the configuration file which specifies which container regist
 Signature policy file.  This defines the trust policy for container images.  Controls which container registries can be used for image, and whether or not the tool should trust the images.
 
 ## SEE ALSO
-buildah(1), CPP(1), buildah-login(1), docker-login(1), namespaces(7), pid\_namespaces(7), containers-policy.json(5), containers-registries.conf(5), user\_namespaces(7), crun(1), runc(8)
+buildah(1), cpp(1), buildah-login(1), docker-login(1), namespaces(7), pid\_namespaces(7), containers-policy.json(5), containers-registries.conf(5), user\_namespaces(7), crun(1), runc(8)
 
 ## FOOTNOTES
 <a name="Footnote1">1</a>: The Buildah project is committed to inclusivity, a core value of open source. The `master` and `slave` mount propagation terminology used here is problematic and divisive, and should be changed. However, these terms are currently used within the Linux kernel and must be used as-is at this time. When the kernel maintainers rectify this usage, Buildah will follow suit immediately.

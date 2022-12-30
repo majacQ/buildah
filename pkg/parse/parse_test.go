@@ -1,6 +1,7 @@
 package parse
 
 import (
+	"fmt"
 	"runtime"
 	"testing"
 
@@ -91,5 +92,52 @@ func TestDeviceFromPath(t *testing.T) {
 
 	// path of directory has no device
 	_, err = DeviceFromPath("/etc/passwd")
+	assert.Error(t, err)
+}
+
+func TestIsolation(t *testing.T) {
+	def, err := defaultIsolation()
+	if err != nil {
+		assert.Error(t, err)
+	}
+
+	isolations := []string{"", "default", "oci", "chroot", "rootless"}
+	for _, i := range isolations {
+		isolation, err := IsolationOption(i)
+		if err != nil {
+			assert.Error(t, fmt.Errorf("isolation %q not supported", i))
+		}
+		var expected string
+		switch i {
+		case "":
+			expected = def.String()
+		case "default":
+			expected = "oci"
+		default:
+			expected = i
+		}
+
+		if isolation.String() != expected {
+			assert.Error(t, fmt.Errorf("isolation %q not equal to user input %q", isolation.String(), expected))
+		}
+	}
+}
+
+func TestParsePlatform(t *testing.T) {
+	os, arch, variant, err := Platform("a/b/c")
+	assert.NoError(t, err)
+	assert.NoError(t, err)
+	assert.Equal(t, os, "a")
+	assert.Equal(t, arch, "b")
+	assert.Equal(t, variant, "c")
+
+	os, arch, variant, err = Platform("a/b")
+	assert.NoError(t, err)
+	assert.NoError(t, err)
+	assert.Equal(t, os, "a")
+	assert.Equal(t, arch, "b")
+	assert.Equal(t, variant, "")
+
+	_, _, _, err = Platform("a")
 	assert.Error(t, err)
 }

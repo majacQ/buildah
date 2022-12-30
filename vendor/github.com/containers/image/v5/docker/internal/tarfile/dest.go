@@ -140,11 +140,11 @@ func (d *Destination) PutBlob(ctx context.Context, stream io.Reader, inputInfo t
 	if isConfig {
 		buf, err := iolimits.ReadAtMost(stream, iolimits.MaxConfigBodySize)
 		if err != nil {
-			return types.BlobInfo{}, errors.Wrap(err, "Error reading Config file stream")
+			return types.BlobInfo{}, errors.Wrap(err, "reading Config file stream")
 		}
 		d.config = buf
 		if err := d.archive.sendFileLocked(d.archive.configPath(inputInfo.Digest), inputInfo.Size, bytes.NewReader(buf)); err != nil {
-			return types.BlobInfo{}, errors.Wrap(err, "Error writing Config file")
+			return types.BlobInfo{}, errors.Wrap(err, "writing Config file")
 		}
 	} else {
 		if err := d.archive.sendFileLocked(d.archive.physicalLayerPath(inputInfo.Digest), inputInfo.Size, stream); err != nil {
@@ -159,7 +159,9 @@ func (d *Destination) PutBlob(ctx context.Context, stream io.Reader, inputInfo t
 // (e.g. if the blob is a filesystem layer, this signifies that the changes it describes need to be applied again when composing a filesystem tree).
 // info.Digest must not be empty.
 // If canSubstitute, TryReusingBlob can use an equivalent equivalent of the desired blob; in that case the returned info may not match the input.
-// If the blob has been successfully reused, returns (true, info, nil); info must contain at least a digest and size.
+// If the blob has been successfully reused, returns (true, info, nil); info must contain at least a digest and size, and may
+// include CompressionOperation and CompressionAlgorithm fields to indicate that a change to the compression type should be
+// reflected in the manifest that will be written.
 // If the transport can not reuse the requested blob, TryReusingBlob returns (false, {}, nil); it returns a non-nil error only on an unexpected failure.
 // May use and/or update cache.
 func (d *Destination) TryReusingBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache, canSubstitute bool) (bool, types.BlobInfo, error) {
@@ -185,7 +187,7 @@ func (d *Destination) PutManifest(ctx context.Context, m []byte, instanceDigest 
 	// so the caller trying a different manifest kind would be pointless.
 	var man manifest.Schema2
 	if err := json.Unmarshal(m, &man); err != nil {
-		return errors.Wrap(err, "Error parsing manifest")
+		return errors.Wrap(err, "parsing manifest")
 	}
 	if man.SchemaVersion != 2 || man.MediaType != manifest.DockerV2Schema2MediaType {
 		return errors.Errorf("Unsupported manifest type, need a Docker schema 2 manifest")

@@ -5,15 +5,14 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
-	"time"
 
-	"github.com/containers/buildah/util"
+	"github.com/containers/buildah/define"
+	"github.com/containers/buildah/pkg/blobcache"
+	"github.com/containers/common/libimage"
+	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/image"
 	"github.com/containers/image/v5/manifest"
-	"github.com/containers/image/v5/pkg/sysregistriesv2"
-	is "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/transports"
-	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
 	"github.com/containers/storage"
 	digest "github.com/opencontainers/go-digest"
@@ -27,29 +26,6 @@ const (
 	// as "no image".
 	BaseImageFakeName = imagebuilder.NoBaseImageSpecifier
 )
-
-func pullAndFindImage(ctx context.Context, store storage.Store, srcRef types.ImageReference, options BuilderOptions, sc *types.SystemContext) (*storage.Image, types.ImageReference, error) {
-	pullOptions := PullOptions{
-		ReportWriter:     options.ReportWriter,
-		Store:            store,
-		SystemContext:    options.SystemContext,
-		BlobDirectory:    options.BlobDirectory,
-		MaxRetries:       options.MaxPullRetries,
-		RetryDelay:       options.PullRetryDelay,
-		OciDecryptConfig: options.OciDecryptConfig,
-	}
-	ref, err := pullImage(ctx, store, srcRef, pullOptions, sc)
-	if err != nil {
-		logrus.Debugf("error pulling image %q: %v", transports.ImageName(srcRef), err)
-		return nil, nil, err
-	}
-	img, err := is.Transport.GetStoreImage(store, ref)
-	if err != nil {
-		logrus.Debugf("error reading pulled image %q: %v", transports.ImageName(srcRef), err)
-		return nil, nil, errors.Wrapf(err, "error locating image %q in local storage", transports.ImageName(ref))
-	}
-	return img, ref, nil
-}
 
 func getImageName(name string, img *storage.Image) string {
 	imageName := name
@@ -86,7 +62,7 @@ func imageNamePrefix(imageName string) string {
 	return prefix
 }
 
-func newContainerIDMappingOptions(idmapOptions *IDMappingOptions) storage.IDMappingOptions {
+func newContainerIDMappingOptions(idmapOptions *define.IDMappingOptions) storage.IDMappingOptions {
 	var options storage.IDMappingOptions
 	if idmapOptions != nil {
 		options.HostUIDMapping = idmapOptions.HostUIDMapping
@@ -101,147 +77,6 @@ func newContainerIDMappingOptions(idmapOptions *IDMappingOptions) storage.IDMapp
 		}
 	}
 	return options
-}
-
-func resolveImage(ctx context.Context, systemContext *types.SystemContext, store storage.Store, options BuilderOptions) (types.ImageReference, string, *storage.Image, error) {
-	type failure struct {
-		resolvedImageName string
-		err               error
-	}
-	candidates, transport, searchRegistriesWereUsedButEmpty, err := util.ResolveName(options.FromImage, options.Registry, systemContext, store)
-	if err != nil {
-		return nil, "", nil, errors.Wrapf(err, "error parsing reference to image %q", options.FromImage)
-	}
-
-	failures := []failure{}
-	for _, image := range candidates {
-		if transport == "" {
-			img, err := store.Image(image)
-			if err != nil {
-				logrus.Debugf("error looking up known-local image %q: %v", image, err)
-				failures = append(failures, failure{resolvedImageName: image, err: err})
-				continue
-			}
-			ref, err := is.Transport.ParseStoreReference(store, img.ID)
-			if err != nil {
-				return nil, "", nil, errors.Wrapf(err, "error parsing reference to image %q", img.ID)
-			}
-			return ref, transport, img, nil
-		}
-
-		trans := transport
-		if transport != util.DefaultTransport {
-			trans = trans + ":"
-		}
-		srcRef, err := alltransports.ParseImageName(trans + image)
-		if err != nil {
-			logrus.Debugf("error parsing image name %q: %v", trans+image, err)
-			failures = append(failures, failure{
-				resolvedImageName: image,
-				err:               errors.Wrapf(err, "error parsing attempted image name %q", trans+image),
-			})
-			continue
-		}
-
-		if options.PullPolicy == PullAlways {
-			pulledImg, pulledReference, err := pullAndFindImage(ctx, store, srcRef, options, systemContext)
-			if err != nil {
-				logrus.Debugf("unable to pull and read image %q: %v", image, err)
-				failures = append(failures, failure{resolvedImageName: image, err: err})
-				continue
-			}
-			return pulledReference, transport, pulledImg, nil
-		}
-
-		destImage, err := localImageNameForReference(ctx, store, srcRef)
-		if err != nil {
-			return nil, "", nil, errors.Wrapf(err, "error computing local image name for %q", transports.ImageName(srcRef))
-		}
-		if destImage == "" {
-			return nil, "", nil, errors.Errorf("error computing local image name for %q", transports.ImageName(srcRef))
-		}
-		ref, err := is.Transport.ParseStoreReference(store, destImage)
-		if err != nil {
-			return nil, "", nil, errors.Wrapf(err, "error parsing reference to image %q", destImage)
-		}
-
-		if options.PullPolicy == PullIfNewer {
-			img, err := is.Transport.GetStoreImage(store, ref)
-			if err == nil {
-				// Let's see if this image is on the repository and if it's there
-				// then note it's Created date.
-				var repoImageCreated time.Time
-				repoImageFound := false
-				repoImage, err := srcRef.NewImage(ctx, systemContext)
-				if err == nil {
-					inspect, err := repoImage.Inspect(ctx)
-					if err == nil {
-						repoImageFound = true
-						repoImageCreated = *inspect.Created
-					}
-					repoImage.Close()
-				}
-				if !repoImageFound || repoImageCreated == img.Created {
-					// The image is only local or the same date is on the
-					// local and repo versions of the image, no need to pull.
-					return ref, transport, img, nil
-				}
-			}
-		} else {
-			// Get the image from the store if present for PullNever and PullIfMissing
-			img, err := is.Transport.GetStoreImage(store, ref)
-			if err == nil {
-				return ref, transport, img, nil
-			}
-			if errors.Cause(err) == storage.ErrImageUnknown && options.PullPolicy == PullNever {
-				logrus.Debugf("no such image %q: %v", transports.ImageName(ref), err)
-				failures = append(failures, failure{
-					resolvedImageName: image,
-					err:               errors.Errorf("no such image %q", transports.ImageName(ref)),
-				})
-				continue
-			}
-		}
-
-		pulledImg, pulledReference, err := pullAndFindImage(ctx, store, srcRef, options, systemContext)
-		if err != nil {
-			logrus.Debugf("unable to pull and read image %q: %v", image, err)
-			failures = append(failures, failure{resolvedImageName: image, err: err})
-			continue
-		}
-		return pulledReference, transport, pulledImg, nil
-	}
-
-	if len(failures) != len(candidates) {
-		return nil, "", nil, errors.Errorf("internal error: %d candidates (%#v) vs. %d failures (%#v)", len(candidates), candidates, len(failures), failures)
-	}
-
-	registriesConfPath := sysregistriesv2.ConfigPath(systemContext)
-	switch len(failures) {
-	case 0:
-		if searchRegistriesWereUsedButEmpty {
-			return nil, "", nil, errors.Errorf("image name %q is a short name and no search registries are defined in %s.", options.FromImage, registriesConfPath)
-		}
-		return nil, "", nil, errors.Errorf("internal error: no pull candidates were available for %q for an unknown reason", options.FromImage)
-
-	case 1:
-		err := failures[0].err
-		if failures[0].resolvedImageName != options.FromImage {
-			err = errors.Wrapf(err, "while pulling %q as %q", options.FromImage, failures[0].resolvedImageName)
-		}
-		if searchRegistriesWereUsedButEmpty {
-			err = errors.Wrapf(err, "(image name %q is a short name and no search registries are defined in %s)", options.FromImage, registriesConfPath)
-		}
-		return nil, "", nil, err
-
-	default:
-		// NOTE: a multi-line error string:
-		e := fmt.Sprintf("The following failures happened while trying to pull image specified by %q based on search registries in %s:", options.FromImage, registriesConfPath)
-		for _, f := range failures {
-			e = e + fmt.Sprintf("\n* %q: %s", f.resolvedImageName, f.err.Error())
-		}
-		return nil, "", nil, errors.New(e)
-	}
 }
 
 func containerNameExist(name string, containers []storage.Container) bool {
@@ -271,6 +106,7 @@ func newBuilder(ctx context.Context, store storage.Store, options BuilderOptions
 		img *storage.Image
 		err error
 	)
+
 	if options.FromImage == BaseImageFakeName {
 		options.FromImage = ""
 	}
@@ -278,11 +114,45 @@ func newBuilder(ctx context.Context, store storage.Store, options BuilderOptions
 	systemContext := getSystemContext(store, options.SystemContext, options.SignaturePolicyPath)
 
 	if options.FromImage != "" && options.FromImage != "scratch" {
-		ref, _, img, err = resolveImage(ctx, systemContext, store, options)
+		imageRuntime, err := libimage.RuntimeFromStore(store, &libimage.RuntimeOptions{SystemContext: systemContext})
 		if err != nil {
 			return nil, err
 		}
+
+		pullPolicy, err := config.ParsePullPolicy(options.PullPolicy.String())
+		if err != nil {
+			return nil, err
+		}
+
+		// Note: options.Format does *not* relate to the image we're
+		// about to pull (see tests/digests.bats).  So we're not
+		// forcing a MIMEType in the pullOptions below.
+		pullOptions := libimage.PullOptions{}
+		pullOptions.RetryDelay = &options.PullRetryDelay
+		pullOptions.OciDecryptConfig = options.OciDecryptConfig
+		pullOptions.SignaturePolicyPath = options.SignaturePolicyPath
+		pullOptions.Writer = options.ReportWriter
+
+		maxRetries := uint(options.MaxPullRetries)
+		pullOptions.MaxRetries = &maxRetries
+
+		if options.BlobDirectory != "" {
+			pullOptions.DestinationLookupReferenceFunc = blobcache.CacheLookupReferenceFunc(options.BlobDirectory, types.PreserveOriginal)
+		}
+
+		pulledImages, err := imageRuntime.Pull(ctx, options.FromImage, pullPolicy, &pullOptions)
+		if err != nil {
+			return nil, err
+		}
+		if len(pulledImages) > 0 {
+			img = pulledImages[0].StorageImage()
+			ref, err = pulledImages[0].StorageReference()
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
+
 	imageSpec := options.FromImage
 	imageID := ""
 	imageDigest := ""
@@ -347,6 +217,7 @@ func newBuilder(ctx context.Context, store storage.Store, options BuilderOptions
 		coptions := storage.ContainerOptions{
 			LabelOpts:        options.CommonBuildOpts.LabelOpts,
 			IDMappingOptions: newContainerIDMappingOptions(options.IDMappingOptions),
+			Volatile:         true,
 		}
 		container, err = store.CreateContainer("", []string{tmpName}, imageID, "", "", &coptions)
 		if err == nil {
@@ -395,7 +266,7 @@ func newBuilder(ctx context.Context, store storage.Store, options BuilderOptions
 		ConfigureNetwork:      options.ConfigureNetwork,
 		CNIPluginPath:         options.CNIPluginPath,
 		CNIConfigDir:          options.CNIConfigDir,
-		IDMappingOptions: IDMappingOptions{
+		IDMappingOptions: define.IDMappingOptions{
 			HostUIDMapping: len(uidmap) == 0,
 			HostGIDMapping: len(uidmap) == 0,
 			UIDMap:         uidmap,

@@ -13,12 +13,15 @@ import (
 	"time"
 
 	"github.com/containers/buildah"
+	"github.com/containers/buildah/define"
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
+	"github.com/containers/common/libimage"
 	"github.com/containers/common/pkg/config"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/manifest"
 	is "github.com/containers/image/v5/storage"
+	storageTransport "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/transports"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
@@ -53,10 +56,11 @@ var builtinAllowedBuildArgs = map[string]bool{
 // interface.  It coordinates the entire build by using one or more
 // StageExecutors to handle each stage of the build.
 type Executor struct {
+	logger                         *logrus.Logger
 	stages                         map[string]*StageExecutor
 	store                          storage.Store
 	contextDir                     string
-	pullPolicy                     buildah.PullPolicy
+	pullPolicy                     define.PullPolicy
 	registry                       string
 	ignoreUnrecognizedInstructions bool
 	quiet                          bool
@@ -67,20 +71,20 @@ type Executor struct {
 	output                         string
 	outputFormat                   string
 	additionalTags                 []string
-	log                            func(format string, args ...interface{})
+	log                            func(format string, args ...interface{}) // can be nil
 	in                             io.Reader
 	out                            io.Writer
 	err                            io.Writer
 	signaturePolicyPath            string
 	systemContext                  *types.SystemContext
 	reportWriter                   io.Writer
-	isolation                      buildah.Isolation
-	namespaceOptions               []buildah.NamespaceOption
-	configureNetwork               buildah.NetworkConfigurationPolicy
+	isolation                      define.Isolation
+	namespaceOptions               []define.NamespaceOption
+	configureNetwork               define.NetworkConfigurationPolicy
 	cniPluginPath                  string
 	cniConfigDir                   string
-	idmappingOptions               *buildah.IDMappingOptions
-	commonBuildOptions             *buildah.CommonBuildOptions
+	idmappingOptions               *define.IDMappingOptions
+	commonBuildOptions             *define.CommonBuildOptions
 	defaultMountsFilePath          string
 	iidfile                        string
 	squash                         bool
@@ -98,7 +102,7 @@ type Executor struct {
 	excludes                       []string
 	unusedArgs                     map[string]struct{}
 	capabilities                   []string
-	devices                        buildah.ContainerDevices
+	devices                        define.ContainerDevices
 	signBy                         string
 	architecture                   string
 	timestamp                      *time.Time
@@ -112,25 +116,41 @@ type Executor struct {
 	stagesSemaphore                *semaphore.Weighted
 	jobs                           int
 	logRusage                      bool
+	rusageLogFile                  io.Writer
+	imageInfoLock                  sync.Mutex
+	imageInfoCache                 map[string]imageTypeAndHistoryAndDiffIDs
+	fromOverride                   string
+	manifest                       string
+	secrets                        map[string]string
+}
+
+type imageTypeAndHistoryAndDiffIDs struct {
+	manifestType string
+	history      []v1.History
+	diffIDs      []digest.Digest
+	err          error
 }
 
 // NewExecutor creates a new instance of the imagebuilder.Executor interface.
-func NewExecutor(store storage.Store, options BuildOptions, mainNode *parser.Node) (*Executor, error) {
+func NewExecutor(logger *logrus.Logger, store storage.Store, options define.BuildOptions, mainNode *parser.Node) (*Executor, error) {
 	defaultContainerConfig, err := config.Default()
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to get container config")
 	}
 
-	excludes, err := imagebuilder.ParseDockerignore(options.ContextDirectory)
-	if err != nil {
-		return nil, err
+	excludes := options.Excludes
+	if len(excludes) == 0 {
+		excludes, err = imagebuilder.ParseDockerignore(options.ContextDirectory)
+		if err != nil {
+			return nil, err
+		}
 	}
 	capabilities, err := defaultContainerConfig.Capabilities("", options.AddCapabilities, options.DropCapabilities)
 	if err != nil {
 		return nil, err
 	}
 
-	devices := buildah.ContainerDevices{}
+	devices := define.ContainerDevices{}
 	for _, device := range append(defaultContainerConfig.Containers.Devices, options.Devices...) {
 		dev, err := parse.DeviceFromPath(device)
 		if err != nil {
@@ -145,8 +165,12 @@ func NewExecutor(store storage.Store, options BuildOptions, mainNode *parser.Nod
 		if err != nil {
 			return nil, err
 		}
+		transientMounts = append([]Mount{mount}, transientMounts...)
+	}
 
-		transientMounts = append([]Mount{Mount(mount)}, transientMounts...)
+	secrets, err := parse.Secrets(options.CommonBuildOpts.Secrets)
+	if err != nil {
+		return nil, err
 	}
 
 	jobs := 1
@@ -159,7 +183,21 @@ func NewExecutor(store storage.Store, options BuildOptions, mainNode *parser.Nod
 		writer = ioutil.Discard
 	}
 
+	var rusageLogFile io.Writer
+
+	if options.LogRusage && !options.Quiet {
+		if options.RusageLogFile == "" {
+			rusageLogFile = options.Out
+		} else {
+			rusageLogFile, err = os.OpenFile(options.RusageLogFile, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	exec := Executor{
+		logger:                         logger,
 		stages:                         make(map[string]*StageExecutor),
 		store:                          store,
 		contextDir:                     options.ContextDirectory,
@@ -216,6 +254,11 @@ func NewExecutor(store storage.Store, options BuildOptions, mainNode *parser.Nod
 		terminatedStage:                make(map[string]struct{}),
 		jobs:                           jobs,
 		logRusage:                      options.LogRusage,
+		rusageLogFile:                  rusageLogFile,
+		imageInfoCache:                 make(map[string]imageTypeAndHistoryAndDiffIDs),
+		fromOverride:                   options.From,
+		manifest:                       options.Manifest,
+		secrets:                        secrets,
 	}
 	if exec.err == nil {
 		exec.err = os.Stderr
@@ -223,15 +266,7 @@ func NewExecutor(store storage.Store, options BuildOptions, mainNode *parser.Nod
 	if exec.out == nil {
 		exec.out = os.Stdout
 	}
-	if exec.log == nil {
-		stepCounter := 0
-		exec.log = func(format string, args ...interface{}) {
-			stepCounter++
-			prefix := fmt.Sprintf("STEP %d: ", stepCounter)
-			suffix := "\n"
-			fmt.Fprintf(exec.out, prefix+format+suffix, args...)
-		}
-	}
+
 	for arg := range options.Args {
 		if _, isBuiltIn := builtinAllowedBuildArgs[arg]; !isBuiltIn {
 			exec.unusedArgs[arg] = struct{}{}
@@ -265,6 +300,7 @@ func (b *Executor) startStage(ctx context.Context, stage *imagebuilder.Stage, st
 	stageExec := &StageExecutor{
 		ctx:             ctx,
 		executor:        b,
+		log:             b.log,
 		index:           stage.Position,
 		stages:          stages,
 		name:            stage.Name,
@@ -282,22 +318,23 @@ func (b *Executor) startStage(ctx context.Context, stage *imagebuilder.Stage, st
 
 // resolveNameToImageRef creates a types.ImageReference for the output name in local storage
 func (b *Executor) resolveNameToImageRef(output string) (types.ImageReference, error) {
-	imageRef, err := alltransports.ParseImageName(output)
-	if err != nil {
-		candidates, _, _, err := util.ResolveName(output, "", b.systemContext, b.store)
-		if err != nil {
-			return nil, errors.Wrapf(err, "error parsing target image name %q", output)
-		}
-		if len(candidates) == 0 {
-			return nil, errors.Errorf("error parsing target image name %q", output)
-		}
-		imageRef2, err2 := is.Transport.ParseStoreReference(b.store, candidates[0])
-		if err2 != nil {
-			return nil, errors.Wrapf(err, "error parsing target image name %q", output)
-		}
-		return imageRef2, nil
+	if imageRef, err := alltransports.ParseImageName(output); err == nil {
+		return imageRef, nil
 	}
-	return imageRef, nil
+	runtime, err := libimage.RuntimeFromStore(b.store, &libimage.RuntimeOptions{SystemContext: b.systemContext})
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := runtime.ResolveName(output)
+	if err != nil {
+		return nil, err
+	}
+	imageRef, err := storageTransport.Transport.ParseStoreReference(b.store, resolved)
+	if err == nil {
+		return imageRef, nil
+	}
+
+	return imageRef, err
 }
 
 // waitForStage waits for an entry to be added to terminatedStage indicating
@@ -338,6 +375,15 @@ func (b *Executor) waitForStage(ctx context.Context, name string, stages imagebu
 
 // getImageTypeAndHistoryAndDiffIDs returns the manifest type, history, and diff IDs list of imageID.
 func (b *Executor) getImageTypeAndHistoryAndDiffIDs(ctx context.Context, imageID string) (string, []v1.History, []digest.Digest, error) {
+  <<<<<<< release-1.17
+  =======
+	b.imageInfoLock.Lock()
+	imageInfo, ok := b.imageInfoCache[imageID]
+	b.imageInfoLock.Unlock()
+	if ok {
+		return imageInfo.manifestType, imageInfo.history, imageInfo.diffIDs, imageInfo.err
+	}
+  >>>>>>> release-1.22
 	imageRef, err := is.Transport.ParseStoreReference(b.store, "@"+imageID)
 	if err != nil {
 		return "", nil, nil, errors.Wrapf(err, "error getting image reference %q", imageID)
@@ -350,6 +396,7 @@ func (b *Executor) getImageTypeAndHistoryAndDiffIDs(ctx context.Context, imageID
 	oci, err := ref.OCIConfig(ctx)
 	if err != nil {
 		return "", nil, nil, errors.Wrapf(err, "error getting possibly-converted OCI config of image %q", imageID)
+  <<<<<<< release-1.17
 	}
 	manifestBytes, manifestFormat, err := ref.Manifest(ctx)
 	if err != nil {
@@ -358,6 +405,24 @@ func (b *Executor) getImageTypeAndHistoryAndDiffIDs(ctx context.Context, imageID
 	if manifestFormat == "" && len(manifestBytes) > 0 {
 		manifestFormat = manifest.GuessMIMEType(manifestBytes)
 	}
+  =======
+	}
+	manifestBytes, manifestFormat, err := ref.Manifest(ctx)
+	if err != nil {
+		return "", nil, nil, errors.Wrapf(err, "error getting manifest of image %q", imageID)
+	}
+	if manifestFormat == "" && len(manifestBytes) > 0 {
+		manifestFormat = manifest.GuessMIMEType(manifestBytes)
+	}
+	b.imageInfoLock.Lock()
+	b.imageInfoCache[imageID] = imageTypeAndHistoryAndDiffIDs{
+		manifestType: manifestFormat,
+		history:      oci.History,
+		diffIDs:      oci.RootFS.DiffIDs,
+		err:          nil,
+	}
+	b.imageInfoLock.Unlock()
+  >>>>>>> release-1.22
 	return manifestFormat, oci.History, oci.RootFS.DiffIDs, nil
 }
 
@@ -381,13 +446,33 @@ func (b *Executor) buildStage(ctx context.Context, cleanupStages map[int]*StageE
 
 	b.stagesLock.Lock()
 	stageExecutor := b.startStage(ctx, &stage, stages, output)
+	if stageExecutor.log == nil {
+		stepCounter := 0
+		stageExecutor.log = func(format string, args ...interface{}) {
+			prefix := ""
+			if len(stages) > 1 {
+				prefix += fmt.Sprintf("[%d/%d] ", stageIndex+1, len(stages))
+			}
+			if !strings.HasPrefix(format, "COMMIT") {
+				stepCounter++
+				prefix += fmt.Sprintf("STEP %d", stepCounter)
+				if stepCounter <= len(stage.Node.Children)+1 {
+					prefix += fmt.Sprintf("/%d", len(stage.Node.Children)+1)
+				}
+				prefix += ": "
+			}
+			suffix := "\n"
+			fmt.Fprintf(stageExecutor.executor.out, prefix+format+suffix, args...)
+		}
+	}
 	b.stagesLock.Unlock()
 
 	// If this a single-layer build, or if it's a multi-layered
 	// build and b.forceRmIntermediateCtrs is set, make sure we
 	// remove the intermediate/build containers, regardless of
 	// whether or not the stage's build fails.
-	if b.forceRmIntermediateCtrs || !b.layers {
+	// Skip cleanup if the stage has no instructions.
+	if b.forceRmIntermediateCtrs || !b.layers && len(stage.Node.Children) > 0 {
 		b.stagesLock.Lock()
 		cleanupStages[stage.Position] = stageExecutor
 		b.stagesLock.Unlock()
@@ -401,7 +486,8 @@ func (b *Executor) buildStage(ctx context.Context, cleanupStages map[int]*StageE
 	// The stage succeeded, so remove its build container if we're
 	// told to delete successful intermediate/build containers for
 	// multi-layered builds.
-	if b.removeIntermediateCtrs {
+	// Skip cleanup if the stage has no instructions.
+	if b.removeIntermediateCtrs && len(stage.Node.Children) > 0 {
 		b.stagesLock.Lock()
 		cleanupStages[stage.Position] = stageExecutor
 		b.stagesLock.Unlock()
@@ -472,6 +558,14 @@ func (b *Executor) Build(ctx context.Context, stages imagebuilder.Stages) (image
 			}
 		}
 		cleanupImages = nil
+
+		if b.rusageLogFile != nil && b.rusageLogFile != b.out {
+			// we deliberately ignore the error here, as this
+			// function can be called multiple times
+			if closer, ok := b.rusageLogFile.(interface{ Close() error }); ok {
+				closer.Close()
+			}
+		}
 		return lastErr
 	}
 
@@ -488,13 +582,19 @@ func (b *Executor) Build(ctx context.Context, stages imagebuilder.Stages) (image
 	// Build maps of every named base image and every referenced stage root
 	// filesystem.  Individual stages can use them to determine whether or
 	// not they can skip certain steps near the end of their stages.
-	for _, stage := range stages {
+	for stageIndex, stage := range stages {
 		node := stage.Node // first line
 		for node != nil {  // each line
 			for _, child := range node.Children { // tokens on this line, though we only care about the first
 				switch strings.ToUpper(child.Value) { // first token - instruction
 				case "FROM":
 					if child.Next != nil { // second token on this line
+						// If we have a fromOverride, replace the value of
+						// image name for the first FROM in the Containerfile.
+						if b.fromOverride != "" {
+							child.Next.Value = b.fromOverride
+							b.fromOverride = ""
+						}
 						base := child.Next.Value
 						if base != "scratch" {
 							// TODO: this didn't undergo variable and arg
@@ -502,7 +602,7 @@ func (b *Executor) Build(ctx context.Context, stages imagebuilder.Stages) (image
 							// FROM instruction uses argument values,
 							// we might not record the right value here.
 							b.baseMap[base] = true
-							logrus.Debugf("base: %q", base)
+							logrus.Debugf("base for stage %d: %q", stageIndex, base)
 						}
 					}
 				case "ADD", "COPY":
@@ -514,7 +614,7 @@ func (b *Executor) Build(ctx context.Context, stages imagebuilder.Stages) (image
 							// not record the right value here.
 							rootfs := strings.TrimPrefix(flag, "--from=")
 							b.rootfsMap[rootfs] = true
-							logrus.Debugf("rootfs: %q", rootfs)
+							logrus.Debugf("rootfs needed for COPY in stage %d: %q", stageIndex, rootfs)
 						}
 					}
 				}
@@ -620,20 +720,32 @@ func (b *Executor) Build(ctx context.Context, stages imagebuilder.Stages) (image
 		fmt.Fprintf(b.out, "[Warning] one or more build args were not consumed: %v\n", unusedList)
 	}
 
-	if len(b.additionalTags) > 0 {
-		if dest, err := b.resolveNameToImageRef(b.output); err == nil {
-			switch dest.Transport().Name() {
-			case is.Transport.Name():
-				img, err := is.Transport.GetStoreImage(b.store, dest)
-				if err != nil {
-					return imageID, ref, errors.Wrapf(err, "error locating just-written image %q", transports.ImageName(dest))
-				}
+	// Add additional tags and print image names recorded in storage
+	if dest, err := b.resolveNameToImageRef(b.output); err == nil {
+		switch dest.Transport().Name() {
+		case is.Transport.Name():
+			img, err := is.Transport.GetStoreImage(b.store, dest)
+			if err != nil {
+				return imageID, ref, errors.Wrapf(err, "error locating just-written image %q", transports.ImageName(dest))
+			}
+			if len(b.additionalTags) > 0 {
 				if err = util.AddImageNames(b.store, "", b.systemContext, img, b.additionalTags); err != nil {
 					return imageID, ref, errors.Wrapf(err, "error setting image names to %v", append(img.Names, b.additionalTags...))
 				}
 				logrus.Debugf("assigned names %v to image %q", img.Names, img.ID)
-			default:
-				logrus.Warnf("don't know how to add tags to images stored in %q transport", dest.Transport().Name())
+			}
+			// Report back the caller the tags applied, if any.
+			img, err = is.Transport.GetStoreImage(b.store, dest)
+			if err != nil {
+				return imageID, ref, errors.Wrapf(err, "error locating just-written image %q", transports.ImageName(dest))
+			}
+			for _, name := range img.Names {
+				fmt.Fprintf(b.out, "Successfully tagged %s\n", name)
+			}
+
+		default:
+			if len(b.additionalTags) > 0 {
+				b.logger.Warnf("don't know how to add tags to images stored in %q transport", dest.Transport().Name())
 			}
 		}
 	}
@@ -643,7 +755,7 @@ func (b *Executor) Build(ctx context.Context, stages imagebuilder.Stages) (image
 	}
 	logrus.Debugf("printing final image id %q", imageID)
 	if b.iidfile != "" {
-		if err = ioutil.WriteFile(b.iidfile, []byte(imageID), 0644); err != nil {
+		if err = ioutil.WriteFile(b.iidfile, []byte("sha256:"+imageID), 0644); err != nil {
 			return imageID, ref, errors.Wrapf(err, "failed to write image ID to file %q", b.iidfile)
 		}
 	} else {
@@ -662,7 +774,7 @@ func (b *Executor) deleteSuccessfulIntermediateCtrs() error {
 	for _, s := range b.stages {
 		for _, ctr := range s.containerIDs {
 			if err := b.store.DeleteContainer(ctr); err != nil {
-				logrus.Errorf("error deleting build container %q: %v\n", ctr, err)
+				b.logger.Errorf("error deleting build container %q: %v\n", ctr, err)
 				lastErr = err
 			}
 		}

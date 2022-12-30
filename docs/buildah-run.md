@@ -58,6 +58,12 @@ not disabled.
 List of directories in which the CNI plugins which will be used for configuring
 network namespaces can be found.
 
+**--env**, **-e** *env=value*
+
+Temporarily add a value (e.g. env=*value*) to the environment for the running
+process. Unlike `buildah config --env`, the environment will not persist to
+later calls to `buildah run` or to the built image. Can be used multiple times.
+
 **--hostname**
 
 Set the hostname inside of the running container.
@@ -124,7 +130,7 @@ Current supported mount TYPES are bind, and tmpfs. <sup>[[1]](#Footnote1)</sup>
 Sets the configuration for the network namespace for the container.
 
 - **none**: no networking;
-- **host**: use the Podman host network stack. Note: the host mode gives the container full access to local system services such as D-bus and is therefore considered insecure;
+- **host**: use the host network stack. Note: the host mode gives the container full access to local system services such as D-bus and is therefore considered insecure;
 - **ns:**_path_: path to a network namespace to join;
 - `private`: create a new namespace for the container (default)
 
@@ -191,6 +197,7 @@ bind mounts `/HOST-DIR` in the host to `/CONTAINER-DIR` in the Buildah
 container. The `OPTIONS` are a comma delimited list and can be: <sup>[[1]](#Footnote1)</sup>
 
    * [rw|ro]
+   * [U]
    * [z|Z]
    * [`[r]shared`|`[r]slave`|`[r]private`]
 
@@ -203,9 +210,19 @@ and bind mounts that into the container.
 You can specify multiple  **-v** options to mount one or more mounts to a
 container.
 
+  `Write Protected Volume Mounts`
+
 You can add the `:ro` or `:rw` suffix to a volume to mount it read-only or
 read-write mode, respectively. By default, the volumes are mounted read-write.
 See examples.
+
+  `Chowning Volume Mounts`
+
+By default, Buildah does not change the owner and group of source volume directories mounted into containers. If a container is created in a new user namespace, the UID and GID in the container may correspond to another UID and GID on the host.
+
+The `:U` suffix tells Buildah to use the correct host UID and GID based on the UID and GID within the container, to change the owner and group of the source volume.
+
+  `Labeling Volume Mounts`
 
 Labeling systems like SELinux require that proper labels are placed on volume
 content mounted into a container. Without a label, the security system might
@@ -240,7 +257,7 @@ Use `df <source-dir>` to determine the source mount and then use
 `findmnt -o TARGET,PROPAGATION <source-mount-dir>` to determine propagation
 properties of source mount, if `findmnt` utility is not available, the source mount point
 can be determined by looking at the mount entry in `/proc/self/mountinfo`. Look
-at `optional fields` and see if any propagaion properties are specified.
+at `optional fields` and see if any propagation properties are specified.
 `shared:X` means the mount is `shared`, `master:X` means the mount is `slave` and if
 nothing is there that means the mount is `private`. <sup>[[1]](#Footnote1)</sup>
 
@@ -250,6 +267,12 @@ example, to bind mount the source directory `/foo` do
 will convert /foo into a `shared` mount point.  The propagation properties of the source
 mount can be changed directly. For instance if `/` is the source mount for
 `/foo`, then use `mount --make-shared /` to convert `/` into a `shared` mount.
+
+**--workingdir** *directory*
+
+Temporarily set the working *directory* for the running process. Unlike
+`buildah config --workingdir`, the workingdir will not persist to later
+calls to `buildah run` or the built image.
 
 
 NOTE: End parsing of options with the `--` option, so that other
@@ -272,6 +295,8 @@ buildah run --tty containerID /bin/bash
 buildah run --tty=false containerID ls /
 
 buildah run --volume /path/on/host:/path/in/container:ro,z containerID sh
+
+buildah run -v /path/on/host:/path/in/container:z,U containerID sh
 
 buildah run --mount type=bind,src=/tmp/on:host,dst=/in:container,ro containerID sh
 

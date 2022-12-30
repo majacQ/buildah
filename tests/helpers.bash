@@ -2,9 +2,10 @@
 
 BUILDAH_BINARY=${BUILDAH_BINARY:-$(dirname ${BASH_SOURCE})/../bin/buildah}
 IMGTYPE_BINARY=${IMGTYPE_BINARY:-$(dirname ${BASH_SOURCE})/../bin/imgtype}
+COPY_BINARY=${COPY_BINARY:-$(dirname ${BASH_SOURCE})/../bin/copy}
 TESTSDIR=${TESTSDIR:-$(dirname ${BASH_SOURCE})}
 STORAGE_DRIVER=${STORAGE_DRIVER:-vfs}
-PATH=$(dirname ${BASH_SOURCE})/..:${PATH}
+PATH=$(dirname ${BASH_SOURCE})/../bin:${PATH}
 OCI=$(${BUILDAH_BINARY} info --format '{{.host.OCIRuntime}}' || command -v runc || command -v crun)
 
 # Default timeout for a buildah command.
@@ -16,90 +17,125 @@ BUILDAH_TIMEOUT=${BUILDAH_TIMEOUT:-300}
 export GPG_TTY=/dev/null
 
 function setup() {
-	pushd "$(dirname "$(readlink -f "$BASH_SOURCE")")"
+    pushd "$(dirname "$(readlink -f "$BASH_SOURCE")")"
 
-	suffix=$(dd if=/dev/urandom bs=12 count=1 status=none | od -An -tx1 | sed -e 's, ,,g')
-	TESTDIR=${BATS_TMPDIR}/tmp${suffix}
-	rm -fr ${TESTDIR}
-	mkdir -p ${TESTDIR}/{root,runroot}
+    # buildah/podman: "repository name must be lowercase".
+    # me: "but it's a local file path, not a repository name!"
+    # buildah/podman: "i dont care. no caps anywhere!"
+    TESTDIR=$(mktemp -d --dry-run --tmpdir=${BATS_TMPDIR:-${TMPDIR:-/tmp}} buildah_tests.XXXXXX | tr A-Z a-z)
+    mkdir --mode=0700 $TESTDIR
+
+    mkdir -p ${TESTDIR}/{root,runroot,sigstore,registries.d}
+    cat >${TESTDIR}/registries.d/default.yaml <<EOF
+default-docker:
+  sigstore-staging: file://${TESTDIR}/sigstore
+docker:
+  registry.access.redhat.com:
+    sigstore: https://access.redhat.com/webassets/docker/content/sigstore
+  registry.redhat.io:
+    sigstore: https://registry.redhat.io/containers/sigstore
+EOF
+
+    # Common options for all buildah and podman invocations
+    ROOTDIR_OPTS="--root ${TESTDIR}/root --runroot ${TESTDIR}/runroot --storage-driver ${STORAGE_DRIVER}"
+    BUILDAH_REGISTRY_OPTS="--registries-conf ${TESTSDIR}/registries.conf --registries-conf-dir ${TESTDIR}/registries.d --short-name-alias-conf ${TESTDIR}/cache/shortnames.conf"
+    PODMAN_REGISTRY_OPTS="--registries-conf ${TESTSDIR}/registries.conf"
 }
 
 function starthttpd() {
-	pushd ${2:-${TESTDIR}} > /dev/null
-	go build -o serve ${TESTSDIR}/serve/serve.go
-	HTTP_SERVER_PORT=$((RANDOM+32768))
-	./serve ${HTTP_SERVER_PORT} ${1:-${BATS_TMPDIR}} &
-	HTTP_SERVER_PID=$!
-	popd > /dev/null
+    pushd ${2:-${TESTDIR}} > /dev/null
+    go build -o serve ${TESTSDIR}/serve/serve.go
+    HTTP_SERVER_PORT=$((RANDOM+32768))
+    ./serve ${HTTP_SERVER_PORT} ${1:-${BATS_TMPDIR}} &
+    HTTP_SERVER_PID=$!
+    popd > /dev/null
 }
 
 function stophttpd() {
-	if test -n "$HTTP_SERVER_PID" ; then
-		kill -HUP ${HTTP_SERVER_PID}
-		unset HTTP_SERVER_PID
-		unset HTTP_SERVER_PORT
-	fi
-	true
+    if test -n "$HTTP_SERVER_PID" ; then
+        kill -HUP ${HTTP_SERVER_PID}
+        unset HTTP_SERVER_PID
+        unset HTTP_SERVER_PORT
+    fi
+    true
 }
 
 function teardown() {
-	stophttpd
+    stophttpd
 
-        # Workaround for #1991 - buildah + overlayfs leaks mount points.
-        # Many tests leave behind /var/tmp/.../root/overlay and sub-mounts;
-        # let's find those and clean them up, otherwise 'rm -rf' fails.
-        # 'sort -r' guarantees that we umount deepest subpaths first.
-        mount |\
-            awk '$3 ~ testdir { print $3 }' testdir="^${TESTDIR}/" |\
-            sort -r |\
-            xargs --no-run-if-empty --max-lines=1 umount
+    # Workaround for #1991 - buildah + overlayfs leaks mount points.
+    # Many tests leave behind /var/tmp/.../root/overlay and sub-mounts;
+    # let's find those and clean them up, otherwise 'rm -rf' fails.
+    # 'sort -r' guarantees that we umount deepest subpaths first.
+    mount |\
+        awk '$3 ~ testdir { print $3 }' testdir="^${TESTDIR}/" |\
+        sort -r |\
+        xargs --no-run-if-empty --max-lines=1 umount
 
-	rm -fr ${TESTDIR}
+    rm -fr ${TESTDIR}
 
-	popd
+    popd
+}
+
+function normalize_image_name() {
+    for img in "$@"; do
+        if [[ "${img##*/}" == "$img" ]] ; then
+            echo -n docker.io/library/"$img"
+        elif [[ docker.io/"${img##*/}" == "$img" ]] ; then
+            echo -n docker.io/library/"${img##*/}"
+        else
+            echo -n "$img"
+        fi
+    done
 }
 
 function _prefetch() {
-	if [ -z "${_BUILDAH_IMAGE_CACHEDIR}" ]; then
-            _pgid=$(sed -ne 's/^NSpgid:\s*//p' /proc/$$/status)
-            export _BUILDAH_IMAGE_CACHEDIR=${BATS_TMPDIR}/buildah-image-cache.$_pgid
-            mkdir -p ${_BUILDAH_IMAGE_CACHEDIR}
+    if [ -z "${_BUILDAH_IMAGE_CACHEDIR}" ]; then
+        _pgid=$(sed -ne 's/^NSpgid:\s*//p' /proc/$$/status)
+        export _BUILDAH_IMAGE_CACHEDIR=${BATS_TMPDIR}/buildah-image-cache.$_pgid
+        mkdir -p ${_BUILDAH_IMAGE_CACHEDIR}
+    fi
+
+    for img in "$@"; do
+        img=$(normalize_image_name "$img")
+        echo "# [checking for: $img]" >&2
+        fname=$(tr -c a-zA-Z0-9.- - <<< "$img")
+        if [ -d $_BUILDAH_IMAGE_CACHEDIR/$fname ]; then
+            echo "# [restoring from cache: $_BUILDAH_IMAGE_CACHEDIR / $img]" >&2
+            copy dir:$_BUILDAH_IMAGE_CACHEDIR/$fname containers-storage:"$img"
+        else
+            rm -fr $_BUILDAH_IMAGE_CACHEDIR/$fname
+            echo "# [copy docker://$img dir:$_BUILDAH_IMAGE_CACHEDIR/$fname]" >&2
+            for attempt in $(seq 3) ; do
+                if copy docker://"$img" dir:$_BUILDAH_IMAGE_CACHEDIR/$fname ; then
+                    break
+                fi
+                sleep 5
+            done
+            echo "# [copy dir:$_BUILDAH_IMAGE_CACHEDIR/$fname containers-storage:$img]" >&2
+            copy dir:$_BUILDAH_IMAGE_CACHEDIR/$fname containers-storage:"$img"
         fi
-
-        local _podman_opts="--root ${TESTDIR}/root --storage-driver ${STORAGE_DRIVER}"
-
-        for img in "$@"; do
-            echo "# [checking for: $img]" >&2
-            fname=$(tr -c a-zA-Z0-9.- - <<< "$img")
-            if [ -e $_BUILDAH_IMAGE_CACHEDIR/$fname.tar ]; then
-                echo "# [restoring from cache: $_BUILDAH_IMAGE_CACHEDIR / $img]" >&2
-                podman $_podman_opts load -i $_BUILDAH_IMAGE_CACHEDIR/$fname.tar
-            else
-                echo "# [podman pull $img]" >&2
-                podman $_podman_opts pull $img || (
-                    echo "Retrying:"
-                    podman $_podman_opts pull $img || (
-                        echo "Re-retrying:"
-                        podman $_podman_opts pull $img
-                    )
-                )
-                rm -f $_BUILDAH_IMAGE_CACHEDIR/$fname.tar
-                echo "# [podman save --format oci-archive $img >$_BUILDAH_IMAGE_CACHEDIR/$fname.tar ]" >&2
-                podman $_podman_opts save --format oci-archive --output=${_BUILDAH_IMAGE_CACHEDIR}/$fname.tar $img
-            fi
-        done
+    done
 }
 
 function createrandom() {
-	dd if=/dev/urandom bs=1 count=${2:-256} of=${1:-${BATS_TMPDIR}/randomfile} status=none
+    dd if=/dev/urandom bs=1 count=${2:-256} of=${1:-${BATS_TMPDIR}/randomfile} status=none
 }
 
 function buildah() {
-	${BUILDAH_BINARY} --registries-conf ${TESTSDIR}/registries.conf --root ${TESTDIR}/root --runroot ${TESTDIR}/runroot --storage-driver ${STORAGE_DRIVER} "$@"
+    ${BUILDAH_BINARY} ${BUILDAH_REGISTRY_OPTS} ${ROOTDIR_OPTS} "$@"
 }
 
 function imgtype() {
-	${IMGTYPE_BINARY} -root ${TESTDIR}/root -runroot ${TESTDIR}/runroot -storage-driver ${STORAGE_DRIVER} "$@"
+    ${IMGTYPE_BINARY} ${ROOTDIR_OPTS} "$@"
+}
+
+function copy() {
+    ${COPY_BINARY} ${ROOTDIR_OPTS} ${BUILDAH_REGISTRY_OPTS} "$@"
+}
+
+function podman() {
+    command podman ${PODMAN_REGISTRY_OPTS} ${ROOTDIR_OPTS} "$@"
 }
 
 #################
@@ -142,7 +178,7 @@ function run_buildah() {
 
         # stdout is only emitted upon error; this echo is to help a debugger
         echo "\$ $BUILDAH_BINARY $*"
-        run timeout --foreground --kill=10 $BUILDAH_TIMEOUT ${BUILDAH_BINARY} --registries-conf ${TESTSDIR}/registries.conf --root ${TESTDIR}/root --runroot ${TESTDIR}/runroot --storage-driver ${STORAGE_DRIVER} "$@"
+        run env CONTAINERS_CONF=${CONTAINERS_CONF:-$(dirname ${BASH_SOURCE})/containers.conf} timeout --foreground --kill=10 $BUILDAH_TIMEOUT ${BUILDAH_BINARY} ${BUILDAH_REGISTRY_OPTS} ${ROOTDIR_OPTS} "$@"
         # without "quotes", multiple lines are glommed together into one
         if [ -n "$output" ]; then
             echo "$output"
@@ -192,33 +228,109 @@ function die() {
     false
 }
 
-###################
-#  expect_output  #  Compare actual vs expected string; fail if mismatch
-###################
+############
+#  assert  #  Compare actual vs expected string; fail if mismatch
+############
 #
-# Compares $output against the given string argument. Optional second
-# argument is descriptive text to show as the error message (default:
-# the command most recently run by 'run_buildah'). This text can be
-# useful to isolate a failure when there are multiple identical
-# run_buildah invocations, and the difference is solely in the
-# config or setup; see, e.g., run.bats:run-cmd().
+# Compares string (default: $output) against the given string argument.
+# By default we do an exact-match comparison against $output, but there
+# are two different ways to invoke us, each with an optional description:
 #
-# By default we run an exact string comparison; use --substring to
-# look for the given string anywhere in $output.
+#      xpect               "EXPECT" [DESCRIPTION]
+#      xpect "RESULT" "OP" "EXPECT" [DESCRIPTION]
 #
-# By default we look in "$output", which is set in run_buildah().
-# To override, use --from="some-other-string" (e.g. "${lines[0]}")
+# The first form (one or two arguments) does an exact-match comparison
+# of "$output" against "EXPECT". The second (three or four args) compares
+# the first parameter against EXPECT, using the given OPerator. If present,
+# DESCRIPTION will be displayed on test failure.
 #
 # Examples:
 #
-#   expect_output "this is exactly what we expect"
-#   expect_output "foo=bar"  "description of this particular test"
-#   expect_output --from="${lines[0]}"  "expected first line"
+#   xpect "this is exactly what we expect"
+#   xpect "${lines[0]}" =~ "^abc"  "first line begins with abc"
+#
+function assert() {
+    local actual_string="$output"
+    local operator='=='
+    local expect_string="$1"
+    local testname="$2"
+
+    case "${#*}" in
+        0)   die "Internal error: 'assert' requires one or more arguments" ;;
+        1|2) ;;
+        3|4) actual_string="$1"
+             operator="$2"
+             expect_string="$3"
+             testname="$4"
+             ;;
+        *)   die "Internal error: too many arguments to 'assert" ;;
+    esac
+
+    # Comparisons.
+    # Special case: there is no !~ operator, so fake it via '! x =~ y'
+    local not=
+    local actual_op="$operator"
+    if [[ $operator == '!~' ]]; then
+        not='!'
+        actual_op='=~'
+    fi
+    if [[ $operator == '=' || $operator == '==' ]]; then
+        # Special case: we can't use '=' or '==' inside [[ ... ]] because
+        # the right-hand side is treated as a pattern... and '[xy]' will
+        # not compare literally. There seems to be no way to turn that off.
+        if [ "$actual_string" = "$expect_string" ]; then
+            return
+        fi
+    else
+        if eval "[[ $not \$actual_string $actual_op \$expect_string ]]"; then
+            return
+        elif [ $? -gt 1 ]; then
+            die "Internal error: could not process 'actual' $operator 'expect'"
+        fi
+    fi
+
+    # Test has failed. Get a descriptive test name.
+    if [ -z "$testname" ]; then
+        testname="${MOST_RECENT_BUILDAH_COMMAND:-[no test name given]}"
+    fi
+
+    # Display optimization: the typical case for 'expect' is an
+    # exact match ('='), but there are also '=~' or '!~' or '-ge'
+    # and the like. Omit the '=' but show the others; and always
+    # align subsequent output lines for ease of comparison.
+    local op=''
+    local ws=''
+    if [ "$operator" != '==' ]; then
+        op="$operator "
+        ws=$(printf "%*s" ${#op} "")
+    fi
+
+    # This is a multi-line message, which may in turn contain multi-line
+    # output, so let's format it ourself, readably
+    local actual_split
+    IFS=$'\n' read -rd '' -a actual_split <<<"$actual_string" || true
+    printf "#/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n"    >&2
+    printf "#|     FAIL: %s\n" "$testname"                        >&2
+    printf "#| expected: %s'%s'\n" "$op" "$expect_string"         >&2
+    printf "#|   actual: %s'%s'\n" "$ws" "${actual_split[0]}"     >&2
+    local line
+    for line in "${actual_split[@]:1}"; do
+        printf "#|         > %s'%s'\n" "$ws" "$line"              >&2
+    done
+    printf "#\\^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"   >&2
+    false
+}
+
+###################
+#  expect_output  #  [obsolete; kept for compatibility]
+###################
+#
+# An earlier version of assert().
 #
 function expect_output() {
     # By default we examine $output, the result of run_buildah
     local actual="$output"
-    local check_substring=
+    local operator='=='
 
     # option processing: recognize --from="...", --substring
     local opt
@@ -226,43 +338,14 @@ function expect_output() {
         local value=$(expr "$opt" : '[^=]*=\(.*\)')
         case "$opt" in
             --from=*)       actual="$value";   shift;;
-            --substring)    check_substring=1; shift;;
+            --substring)    operator='=~';     shift;;
             --)             shift; break;;
             -*)             die "Invalid option '$opt'" ;;
             *)              break;;
         esac
     done
 
-    local expect="$1"
-    local testname="${2:-${MOST_RECENT_BUILDAH_COMMAND:-[no test name given]}}"
-
-    if [ -z "$expect" ]; then
-        if [ -z "$actual" ]; then
-            return
-        fi
-        expect='[no output]'
-    elif [ "$actual" = "$expect" ]; then
-	return
-    elif [ -n "$check_substring" ]; then
-        if [[ "$actual" =~ $expect ]]; then
-            return
-        fi
-    fi
-
-    # This is a multi-line message, which may in turn contain multi-line
-    # output, so let's format it ourself, readably
-    local -a actual_split
-    readarray -t actual_split <<<"$actual"
-    printf "#/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv\n" >&2
-    printf "#|     FAIL: %s\n" "$testname"                     >&2
-    printf "#| expected: '%s'\n" "$expect"                     >&2
-    printf "#|   actual: '%s'\n" "${actual_split[0]}"          >&2
-    local line
-    for line in "${actual_split[@]:1}"; do
-        printf "#|         > '%s'\n" "$line"                   >&2
-    done
-    printf "#\\^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n" >&2
-    false
+    assert "$actual" "$operator" "$@"
 }
 
 #######################
@@ -351,4 +434,18 @@ function skip_if_in_container() {
     if test "$CONTAINER" = "podman"; then
         skip "This test is not working inside a container"
     fi
+}
+
+#######################
+#  skip_if_no_docker  #
+#######################
+function skip_if_no_docker() {
+  which docker                  || skip "docker is not installed"
+  systemctl -q is-active docker || skip "docker.service is not active"
+
+  # Confirm that this is really truly docker, not podman.
+  docker_version=$(docker --version)
+  if [[ $docker_version =~ podman ]]; then
+    skip "this test needs actual docker, not podman-docker"
+  fi
 }

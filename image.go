@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/containers/buildah/copier"
+	"github.com/containers/buildah/define"
 	"github.com/containers/buildah/docker"
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/image"
@@ -35,14 +36,16 @@ const (
 	// OCIv1ImageManifest is the MIME type of an OCIv1 image manifest,
 	// suitable for specifying as a value of the PreferredManifestType
 	// member of a CommitOptions structure.  It is also the default.
-	OCIv1ImageManifest = v1.MediaTypeImageManifest
+	OCIv1ImageManifest = define.OCIv1ImageManifest
 	// Dockerv2ImageManifest is the MIME type of a Docker v2s2 image
 	// manifest, suitable for specifying as a value of the
 	// PreferredManifestType member of a CommitOptions structure.
-	Dockerv2ImageManifest = manifest.DockerV2Schema2MediaType
+	Dockerv2ImageManifest = define.Dockerv2ImageManifest
 )
 
 type containerImageRef struct {
+	fromImageName         string
+	fromImageID           string
 	store                 storage.Store
 	compression           archive.Compression
 	name                  reference.Named
@@ -57,14 +60,18 @@ type containerImageRef struct {
 	historyComment        string
 	annotations           map[string]string
 	preferredManifestType string
-	exporting             bool
 	squash                bool
 	emptyLayer            bool
-	idMappingOptions      *IDMappingOptions
+	idMappingOptions      *define.IDMappingOptions
 	parent                string
 	blobDirectory         string
 	preEmptyLayers        []v1.History
 	postEmptyLayers       []v1.History
+}
+
+type blobLayerInfo struct {
+	ID   string
+	Size int64
 }
 
 type containerImageSource struct {
@@ -80,8 +87,8 @@ type containerImageSource struct {
 	configDigest  digest.Digest
 	manifest      []byte
 	manifestType  string
-	exporting     bool
 	blobDirectory string
+	blobLayers    map[digest.Digest]blobLayerInfo
 }
 
 func (i *containerImageRef) NewImage(ctx context.Context, sc *types.SystemContext) (types.ImageCloser, error) {
@@ -143,14 +150,16 @@ func computeLayerMIMEType(what string, layerCompression archive.Compression) (om
 }
 
 // Extract the container's whole filesystem as if it were a single layer.
-func (i *containerImageRef) extractRootfs() (io.ReadCloser, error) {
+func (i *containerImageRef) extractRootfs() (io.ReadCloser, chan error, error) {
 	var uidMap, gidMap []idtools.IDMap
 	mountPoint, err := i.store.Mount(i.containerID, i.mountLabel)
 	if err != nil {
-		return nil, errors.Wrapf(err, "error mounting container %q", i.containerID)
+		return nil, nil, errors.Wrapf(err, "error mounting container %q", i.containerID)
 	}
 	pipeReader, pipeWriter := io.Pipe()
+	errChan := make(chan error, 1)
 	go func() {
+		defer close(errChan)
 		if i.idMappingOptions != nil {
 			uidMap, gidMap = convertRuntimeIDMaps(i.idMappingOptions.UIDMap, i.idMappingOptions.GIDMap)
 		}
@@ -159,7 +168,9 @@ func (i *containerImageRef) extractRootfs() (io.ReadCloser, error) {
 			GIDMap: gidMap,
 		}
 		err = copier.Get(mountPoint, mountPoint, copierOptions, []string{"."}, pipeWriter)
+		errChan <- err
 		pipeWriter.Close()
+
 	}()
 	return ioutils.NewReadCloserWrapper(pipeReader, func() error {
 		if err = pipeReader.Close(); err != nil {
@@ -172,7 +183,7 @@ func (i *containerImageRef) extractRootfs() (io.ReadCloser, error) {
 			err = err2
 		}
 		return err
-	}), nil
+	}), errChan, nil
 }
 
 // Build fresh copies of the container configuration structures so that we can edit them
@@ -215,9 +226,11 @@ func (i *containerImageRef) createConfigsAndManifests() (v1.Image, v1.Manifest, 
 	dimage.RootFS = &docker.V2S2RootFS{}
 	dimage.RootFS.Type = docker.TypeLayers
 	dimage.RootFS.DiffIDs = []digest.Digest{}
-	// Only clear the history if we're squashing, otherwise leave it be so that we can append
-	// entries to it.
+	// Only clear the history if we're squashing, otherwise leave it be so
+	// that we can append entries to it.  Clear the parent, too, we no
+	// longer include its layers and history.
 	if i.squash {
+		dimage.Parent = ""
 		dimage.History = []docker.V2S2History{}
 	}
 
@@ -279,7 +292,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 	logrus.Debugf("layer list: %q", layers)
 
 	// Make a temporary directory to hold blobs.
-	path, err := ioutil.TempDir(os.TempDir(), Package)
+	path, err := ioutil.TempDir(os.TempDir(), define.Package)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error creating temporary directory to hold layer blobs")
 	}
@@ -288,7 +301,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 		if src == nil {
 			err2 := os.RemoveAll(path)
 			if err2 != nil {
-				logrus.Errorf("error removing layer blob directory %q: %v", path, err)
+				logrus.Errorf("error removing layer blob directory: %v", err)
 			}
 		}
 	}()
@@ -301,6 +314,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 	}
 
 	// Extract each layer and compute its digests, both compressed (if requested) and uncompressed.
+	blobLayers := make(map[digest.Digest]blobLayerInfo)
 	for _, layerID := range layers {
 		what := fmt.Sprintf("layer %q", layerID)
 		if i.squash {
@@ -319,12 +333,9 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 		if i.emptyLayer && layerID == i.layerID {
 			continue
 		}
-		// If we're not re-exporting the data, and we're reusing layers individually, reuse
-		// the blobsum and diff IDs.
-		if !i.exporting && !i.squash && layerID != i.layerID {
-			if layer.UncompressedDigest == "" {
-				return nil, errors.Errorf("unable to look up size of layer %q", layerID)
-			}
+		// If we already know the digest of the contents of parent
+		// layers, reuse their blobsums, diff IDs, and sizes.
+		if !i.squash && layerID != i.layerID && layer.UncompressedDigest != "" {
 			layerBlobSum := layer.UncompressedDigest
 			layerBlobSize := layer.UncompressedSize
 			diffID := layer.UncompressedDigest
@@ -344,6 +355,10 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 			// Note this layer in the list of diffIDs, again using the uncompressed digest.
 			oimage.RootFS.DiffIDs = append(oimage.RootFS.DiffIDs, diffID)
 			dimage.RootFS.DiffIDs = append(dimage.RootFS.DiffIDs, diffID)
+			blobLayers[diffID] = blobLayerInfo{
+				ID:   layer.ID,
+				Size: layerBlobSize,
+			}
 			continue
 		}
 		// Figure out if we need to change the media type, in case we've changed the compression.
@@ -357,9 +372,10 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 			Compression: &noCompression,
 		}
 		var rc io.ReadCloser
+		var errChan chan error
 		if i.squash {
 			// Extract the root filesystem as a single layer.
-			rc, err = i.extractRootfs()
+			rc, errChan, err = i.extractRootfs()
 			if err != nil {
 				return nil, err
 			}
@@ -417,6 +433,14 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 		writeCloser.Close()
 		layerFile.Close()
 		rc.Close()
+
+		if errChan != nil {
+			err = <-errChan
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		if err != nil {
 			return nil, errors.Wrapf(err, "error storing %s to file", what)
 		}
@@ -486,11 +510,16 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 	if i.created != nil {
 		created = (*i.created).UTC()
 	}
+	comment := i.historyComment
+	// Add a comment for which base image is being used
+	if strings.Contains(i.parent, i.fromImageID) && i.fromImageName != i.fromImageID {
+		comment += "FROM " + i.fromImageName
+	}
 	onews := v1.History{
 		Created:    &created,
 		CreatedBy:  i.createdBy,
 		Author:     oimage.Author,
-		Comment:    i.historyComment,
+		Comment:    comment,
 		EmptyLayer: i.emptyLayer,
 	}
 	oimage.History = append(oimage.History, onews)
@@ -498,7 +527,7 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 		Created:    created,
 		CreatedBy:  i.createdBy,
 		Author:     dimage.Author,
-		Comment:    i.historyComment,
+		Comment:    comment,
 		EmptyLayer: i.emptyLayer,
 	}
 	dimage.History = append(dimage.History, dnews)
@@ -579,8 +608,8 @@ func (i *containerImageRef) NewImageSource(ctx context.Context, sc *types.System
 		configDigest:  digest.Canonical.FromBytes(config),
 		manifest:      imageManifest,
 		manifestType:  manifestType,
-		exporting:     i.exporting,
 		blobDirectory: i.blobDirectory,
+		blobLayers:    blobLayers,
 	}
 	return src, nil
 }
@@ -655,39 +684,51 @@ func (i *containerImageSource) GetBlob(ctx context.Context, blob types.BlobInfo,
 		}
 		return ioutils.NewReadCloserWrapper(reader, closer), reader.Size(), nil
 	}
-	var layerFile *os.File
-	for _, path := range []string{i.blobDirectory, i.path} {
-		layerFile, err = os.OpenFile(filepath.Join(path, blob.Digest.String()), os.O_RDONLY, 0600)
-		if err == nil {
-			break
-		}
-		if !os.IsNotExist(err) {
-			logrus.Debugf("error checking for layer %q in %q: %v", blob.Digest.String(), path, err)
-		}
-	}
-	if err != nil || layerFile == nil {
-		logrus.Debugf("error reading layer %q: %v", blob.Digest.String(), err)
-		return nil, -1, errors.Wrapf(err, "error opening file %q to buffer layer blob", filepath.Join(i.path, blob.Digest.String()))
-	}
+	var layerReadCloser io.ReadCloser
 	size = -1
-	st, err := layerFile.Stat()
-	if err != nil {
-		logrus.Warnf("error reading size of layer %q: %v", blob.Digest.String(), err)
+	if blobLayerInfo, ok := i.blobLayers[blob.Digest]; ok {
+		noCompression := archive.Uncompressed
+		diffOptions := &storage.DiffOptions{
+			Compression: &noCompression,
+		}
+		layerReadCloser, err = i.store.Diff("", blobLayerInfo.ID, diffOptions)
+		size = blobLayerInfo.Size
 	} else {
-		size = st.Size()
+		for _, blobDir := range []string{i.blobDirectory, i.path} {
+			var layerFile *os.File
+			layerFile, err = os.OpenFile(filepath.Join(blobDir, blob.Digest.String()), os.O_RDONLY, 0600)
+			if err == nil {
+				st, err := layerFile.Stat()
+				if err != nil {
+					logrus.Warnf("error reading size of layer file %q: %v", blob.Digest.String(), err)
+				} else {
+					size = st.Size()
+					layerReadCloser = layerFile
+					break
+				}
+				layerFile.Close()
+			}
+			if !os.IsNotExist(err) {
+				logrus.Debugf("error checking for layer %q in %q: %v", blob.Digest.String(), blobDir, err)
+			}
+		}
+	}
+	if err != nil || layerReadCloser == nil || size == -1 {
+		logrus.Debugf("error reading layer %q: %v", blob.Digest.String(), err)
+		return nil, -1, errors.Wrap(err, "error opening layer blob")
 	}
 	logrus.Debugf("reading layer %q", blob.Digest.String())
 	closer := func() error {
 		logrus.Debugf("finished reading layer %q", blob.Digest.String())
-		if err := layerFile.Close(); err != nil {
+		if err := layerReadCloser.Close(); err != nil {
 			return errors.Wrapf(err, "error closing layer %q after reading", blob.Digest.String())
 		}
 		return nil
 	}
-	return ioutils.NewReadCloserWrapper(layerFile, closer), size, nil
+	return ioutils.NewReadCloserWrapper(layerReadCloser, closer), size, nil
 }
 
-func (b *Builder) makeImageRef(options CommitOptions, exporting bool) (types.ImageReference, error) {
+func (b *Builder) makeImageRef(options CommitOptions) (types.ImageReference, error) {
 	var name reference.Named
 	container, err := b.store.Container(b.ContainerID)
 	if err != nil {
@@ -700,7 +741,7 @@ func (b *Builder) makeImageRef(options CommitOptions, exporting bool) (types.Ima
 	}
 	manifestType := options.PreferredManifestType
 	if manifestType == "" {
-		manifestType = OCIv1ImageManifest
+		manifestType = define.OCIv1ImageManifest
 	}
 	oconfig, err := json.Marshal(&b.OCIv1)
 	if err != nil {
@@ -732,6 +773,8 @@ func (b *Builder) makeImageRef(options CommitOptions, exporting bool) (types.Ima
 	}
 
 	ref := &containerImageRef{
+		fromImageName:         b.FromImage,
+		fromImageID:           b.FromImageID,
 		store:                 b.store,
 		compression:           options.Compression,
 		name:                  name,
@@ -746,7 +789,6 @@ func (b *Builder) makeImageRef(options CommitOptions, exporting bool) (types.Ima
 		historyComment:        b.HistoryComment(),
 		annotations:           b.Annotations(),
 		preferredManifestType: manifestType,
-		exporting:             exporting,
 		squash:                options.Squash,
 		emptyLayer:            options.EmptyLayer && !options.Squash,
 		idMappingOptions:      &b.IDMappingOptions,

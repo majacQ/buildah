@@ -22,7 +22,7 @@ The Buildah package provides a command line tool which can be used to:
 
 **--log-level** **value**
 
-The log level to be used. Either "debug", "info", "warn" or "error", per default "warn".
+The log level to be used. Either "trace", "debug", "info", "warn", "error", "fatal", or "panic", defaulting to "warn".
 
 **--help, -h**
 
@@ -51,8 +51,21 @@ Default root dir is configured in /etc/containers/storage.conf
 
 **--runroot** **value**
 
-Storage state dir (default: "/var/run/containers/storage" for UID 0, "/var/run/user/$UID" for other users)
+Storage state dir (default: "/run/containers/storage" for UID 0, "/run/user/$UID" for other users)
 Default state dir is configured in /etc/containers/storage.conf
+
+**--short-name-alias-conf** *path*
+
+Pathname of the file which contains cached mappings between short image names
+and their corresponding fully-qualified names.  It is used for mapping from
+names of images specified using short names like "hello-world" which don't
+include a registry component and a corresponding fully-specified name which
+includes a registry and any other components, such as
+"docker.io/library/hello-world".  It is not recommended that this option be
+used, as the default behavior of using the system-wide cache
+(*/var/cache/containers/short-name-aliases.conf*) or per-user cache
+(*$HOME/.cache/containers/short-name-aliases.conf*) to supplement system-wide
+defaults is most often preferred.
 
 **--storage-driver** **value**
 
@@ -88,6 +101,8 @@ If none of --userns-uid-map-user, --userns-gid-map-group, or --userns-uid-map
 are specified, but --userns-gid-map is specified, the UID map will be set to
 use the same numeric values as the GID map.
 
+**NOTE:** When this option is specified by a rootless user, the specified mappings are relative to the rootless usernamespace in the container, rather than being relative to the host as it would be when run rootful.
+
 **--userns-gid-map** *mapping*
 
 Directly specifies a GID mapping which should be used to set ownership, at the
@@ -108,6 +123,8 @@ supplied, settings from the global option will be used.
 If none of --userns-uid-map-user, --userns-gid-map-group, or --userns-gid-map
 are specified, but --userns-uid-map is specified, the GID map will be set to
 use the same numeric values as the UID map.
+
+**NOTE:** When this option is specified by a rootless user, the specified mappings are relative to the rootless usernamespace in the container, rather than being relative to the host as it would be when run rootful.
 
 **--version**, **-v**
 
@@ -141,6 +158,7 @@ Buildah can set up environment variables from the env entry in the [engine] tabl
 | buildah-rm(1)         | Removes one or more working containers.                                                              |
 | buildah-rmi(1)        | Removes one or more images.                                                                          |
 | buildah-run(1)        | Run a command inside of the container.                                                               |
+| buildah-source(1)     | Create, push, pull and manage source images and associated source artifacts.                         |
 | buildah-tag(1)        | Add an additional name to a local image.                                                             |
 | buildah-umount(1)     | Unmount a working container's root file system.                                                      |
 | buildah-unshare(1)    | Launch a command in a user namespace with modified ID mappings.                                      |
@@ -174,7 +192,7 @@ registries.conf is the configuration file which specifies which container regist
 Directory which contains configuration snippets which specify registries which should be consulted when completing image names which do not include a registry or domain portion.
 
 ## SEE ALSO
-podman(1), containers.conf(5), containers-mounts.conf(5), newuidmap(1), newgidmap(1), containers-registries.conf(5), containers-storage.conf(5)
+containers.conf(5), containers-mounts.conf(5), newuidmap(1), newgidmap(1), containers-registries.conf(5), containers-storage.conf(5)
 
 ## HISTORY
 December 2017, Originally compiled by Tom Sweeney <tsweeney@redhat.com>

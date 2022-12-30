@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/containers/buildah"
-	"github.com/containers/buildah/imagebuildah"
+	"github.com/containers/buildah/define"
 	buildahcli "github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
@@ -15,6 +15,7 @@ import (
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/transports"
 	"github.com/containers/image/v5/transports/alltransports"
+	"github.com/containers/storage"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -22,6 +23,7 @@ import (
 )
 
 type pushOptions struct {
+	all                bool
 	authfile           string
 	blobCache          string
 	certDir            string
@@ -29,6 +31,7 @@ type pushOptions struct {
 	digestfile         string
 	disableCompression bool
 	format             string
+	rm                 bool
 	quiet              bool
 	removeSignatures   bool
 	signaturePolicy    string
@@ -68,14 +71,16 @@ func init() {
 
 	flags := pushCommand.Flags()
 	flags.SetInterspersed(false)
+	flags.BoolVar(&opts.all, "all", false, "push all of the images referenced by the manifest list")
 	flags.StringVar(&opts.authfile, "authfile", auth.GetDefaultAuthFile(), "path of the authentication file. Use REGISTRY_AUTH_FILE environment variable to override")
 	flags.StringVar(&opts.blobCache, "blob-cache", "", "assume image blobs in the specified directory will be available for pushing")
 	flags.StringVar(&opts.certDir, "cert-dir", "", "use certificates at the specified path to access the registry")
 	flags.StringVar(&opts.creds, "creds", "", "use `[username[:password]]` for accessing the registry")
 	flags.StringVar(&opts.digestfile, "digestfile", "", "after copying the image, write the digest of the resulting image to the file")
 	flags.BoolVarP(&opts.disableCompression, "disable-compression", "D", false, "don't compress layers")
-	flags.StringVarP(&opts.format, "format", "f", "", "manifest type (oci, v2s1, or v2s2) to use when saving image using the 'dir:' transport (default is manifest type of source)")
+	flags.StringVarP(&opts.format, "format", "f", "", "manifest type (oci, v2s1, or v2s2) to use in the destination (default is manifest type of source, with fallbacks)")
 	flags.BoolVarP(&opts.quiet, "quiet", "q", false, "don't output progress information when pushing images")
+	flags.BoolVar(&opts.rm, "rm", false, "remove the manifest list if push succeeds")
 	flags.BoolVarP(&opts.removeSignatures, "remove-signatures", "", false, "don't copy signatures when pushing image")
 	flags.StringVar(&opts.signBy, "sign-by", "", "sign the image using a GPG key with the specified `FINGERPRINT`")
 	flags.StringVar(&opts.signaturePolicy, "signature-policy", "", "`pathname` of signature policy file (not usually used)")
@@ -120,9 +125,9 @@ func pushCmd(c *cobra.Command, args []string, iopts pushOptions) error {
 		return errors.New("Only two arguments are necessary to push: source and destination")
 	}
 
-	compress := imagebuildah.Gzip
+	compress := define.Gzip
 	if iopts.disableCompression {
-		compress = imagebuildah.Uncompressed
+		compress = define.Uncompressed
 	}
 
 	store, err := getStore(c)
@@ -195,6 +200,12 @@ func pushCmd(c *cobra.Command, args []string, iopts pushOptions) error {
 
 	ref, digest, err := buildah.Push(getContext(), src, dest, options)
 	if err != nil {
+		if errors.Cause(err) != storage.ErrImageUnknown {
+			// Image might be a manifest so attempt a manifest push
+			if manifestsErr := manifestPush(systemContext, store, src, destSpec, iopts); manifestsErr == nil {
+				return nil
+			}
+		}
 		return util.GetFailureCause(err, errors.Wrapf(err, "error pushing image %q to %q", src, destSpec))
 	}
 	if ref != nil {

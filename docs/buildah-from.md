@@ -17,7 +17,7 @@ Multiple transports are supported:
   An existing local directory _path_ containing the manifest, layer tarballs, and signatures in individual files. This is a non-standardized format, primarily useful for debugging or noninvasive image inspection.
 
   **docker://**_docker-reference_ (Default)
-  An image in a registry implementing the "Docker Registry HTTP API V2". By default, uses the authorization state in `$XDG\_RUNTIME\_DIR/containers/auth.json`, which is set using `(buildah login)`. If the authorization state is not found there, `$HOME/.docker/config.json` is checked, which is set using `(docker login)`.
+  An image in a registry implementing the "Docker Registry HTTP API V2". By default, uses the authorization state in `$XDG\_RUNTIME\_DIR/containers/auth.json`, which is set using `(buildah login)`.  If XDG_RUNTIME_DIR is not set, the default is /run/containers/$UID/auth.json. If the authorization state is not found there, `$HOME/.docker/config.json` is checked, which is set using `(docker login)`.
   If _docker-reference_ does not include a registry name, *localhost* will be consulted first, followed by any registries named in the registries configuration.
 
   **docker-archive:**_path_
@@ -49,10 +49,18 @@ Add a custom host-to-IP mapping (host:ip)
 
 Add a line to /etc/hosts. The format is hostname:ip. The **--add-host** option can be set multiple times.
 
+**--arch**="ARCH"
+
+Set the ARCH of the image to be pulled to the provided value instead of using the architecture of the host. (Examples: aarch64, arm, i686, ppc64le, s390x, x86_64)
+
 **--authfile** *path*
 
-Path of the authentication file. Default is ${XDG\_RUNTIME\_DIR}/containers/auth.json, which is set using `buildah login`.
+Path of the authentication file. Default is ${XDG_\RUNTIME\_DIR}/containers/auth.json. If XDG_RUNTIME_DIR is not set, the default is /run/containers/$UID/auth.json. This file is created using using `buildah login`.
+
 If the authorization state is not found there, $HOME/.docker/config.json is checked, which is set using `docker login`.
+
+Note: You can also override the default path of the authentication file by setting the REGISTRY\_AUTH\_FILE
+environment variable. `export REGISTRY_AUTH_FILE=path`
 
 **--cap-add**=*CAP\_xxx*
 
@@ -273,6 +281,10 @@ that the network namespace in which `Buildah` itself is being run should be
 reused, or it can be the path to a network namespace which is already in use by
 another process.
 
+**--os**="OS"
+
+Set the OS of the image to be pulled to the provided value instead of using the current operating system of the host.
+
 **--pid** *how*
 
 Sets the configuration for PID namespaces when the container is subsequently
@@ -335,7 +347,7 @@ If you omit the unit, the system uses bytes. If you omit the size entirely, the 
 
 **--tls-verify** *bool-value*
 
-Require HTTPS and verify certificates when talking to container registries (defaults to true).  TLS verification cannot be used when talking to an insecure registry.
+Require HTTPS and verification of certificates when talking to container registries (defaults to true).  TLS verification cannot be used when talking to an insecure registry.
 
 **--ulimit** *type*=*soft-limit*[:*hard-limit*]
 
@@ -391,6 +403,8 @@ If none of --userns-uid-map-user, --userns-gid-map-group, or --userns-uid-map
 are specified, but --userns-gid-map is specified, the UID map will be set to
 use the same numeric values as the GID map.
 
+**NOTE:** When this option is specified by a rootless user, the specified mappings are relative to the rootless usernamespace in the container, rather than being relative to the host as it would be when run rootful.
+
 **--userns-gid-map-group** *mapping*
 
 Directly specifies a GID mapping which should be used to set ownership, at the
@@ -411,6 +425,8 @@ supplied, settings from the global option will be used.
 If none of --userns-uid-map-user, --userns-gid-map-group, or --userns-gid-map
 are specified, but --userns-uid-map is specified, the GID map will be set to
 use the same numeric values as the UID map.
+
+**NOTE:** When this option is specified by a rootless user, the specified mappings are relative to the rootless usernamespace in the container, rather than being relative to the host as it would be when run rootful.
 
 **--userns-uid-map-user** *user*
 
@@ -444,6 +460,10 @@ that the UTS namespace in which `Buildah` itself is being run should be reused,
 or it can be the path to a UTS namespace which is already in use by another
 process.
 
+**--variant**=""
+
+Set the architecture variant of the image to be pulled.
+
 **--volume**, **-v**[=*[HOST-DIR:CONTAINER-DIR[:OPTIONS]]*]
 
    Create a bind mount. If you specify, ` -v /HOST-DIR:/CONTAINER-DIR`, Buildah
@@ -451,6 +471,7 @@ process.
    container. The `OPTIONS` are a comma delimited list and can be: <sup>[[1]](#Footnote1)</sup>
 
    * [rw|ro]
+   * [U]
    * [z|Z|O]
    * [`[r]shared`|`[r]slave`|`[r]private`|`[r]unbindable`]
 
@@ -463,9 +484,17 @@ and bind mounts that into the container.
 You can specify multiple  **-v** options to mount one or more mounts to a
 container.
 
+  `Write Protected Volume Mounts`
+
 You can add the `:ro` or `:rw` suffix to a volume to mount it read-only or
 read-write mode, respectively. By default, the volumes are mounted read-write.
 See examples.
+
+  `Chowning Volume Mounts`
+
+By default, Buildah does not change the owner and group of source volume directories mounted into containers. If a container is created in a new user namespace, the UID and GID in the container may correspond to another UID and GID on the host.
+
+The `:U` suffix tells Buildah to use the correct host UID and GID based on the UID and GID within the container, to change the owner and group of the source volume.
 
   `Labeling Volume Mounts`
 
@@ -484,7 +513,7 @@ Only the current container can use a private volume.
 
   `Overlay Volume Mounts`
 
-   The `:O` flag tells Buildah to mount the directory from the host as a temporary storage using the Overlay file system. The `RUN` command containers are allowed to modify contents within the mountpoint and are stored in the container storage in a separate directory.  In Ovelay FS terms the source directory will be the lower, and the container storage directory will be the upper. Modifications to the mount point are destroyed when the `RUN` command finishes executing, similar to a tmpfs mount point.
+   The `:O` flag tells Buildah to mount the directory from the host as a temporary storage using the Overlay file system. The `RUN` command containers are allowed to modify contents within the mountpoint and are stored in the container storage in a separate directory.  In Overlay FS terms the source directory will be the lower, and the container storage directory will be the upper. Modifications to the mount point are destroyed when the `RUN` command finishes executing, similar to a tmpfs mount point.
 
   Any subsequent execution of `RUN` commands sees the original source directory content, any changes from previous RUN commands no longer exists.
 
@@ -516,7 +545,7 @@ Use `df <source-dir>` to determine the source mount and then use
 `findmnt -o TARGET,PROPAGATION <source-mount-dir>` to determine propagation
 properties of source mount, if `findmnt` utility is not available, the source mount point
 can be determined by looking at the mount entry in `/proc/self/mountinfo`. Look
-at `optional fields` and see if any propagaion properties are specified.
+at `optional fields` and see if any propagation properties are specified.
 `shared:X` means the mount is `shared`, `master:X` means the mount is `slave` and if
 nothing is there that means the mount is `private`. <sup>[[1]](#Footnote1)</sup>
 
@@ -555,7 +584,11 @@ buildah from --ulimit nofile=1024:1028 --cgroup-parent /path/to/cgroup/parent my
 
 buildah from --volume /home/test:/myvol:ro,Z myregistry/myrepository/imagename:imagetag
 
+buildah from -v /home/test:/myvol:z,U myregistry/myrepository/imagename:imagetag
+
 buildah from -v /var/lib/yum:/var/lib/yum:O myregistry/myrepository/imagename:imagetag
+
+buildah from --arch=arm --variant v7 myregistry/myrepository/imagename:imagetag
 
 ## ENVIRONMENT
 

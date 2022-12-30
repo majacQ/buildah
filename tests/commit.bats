@@ -53,12 +53,13 @@ load helpers
   cid=$output
   run_buildah commit --signature-policy ${TESTSDIR}/policy.json --rm $cid alpine-image
   run_buildah 125 rm $cid
-  expect_output --substring "error removing container \"alpine-working-container\": error reading build container: container not known"
+  expect_output --substring "error removing container \"alpine-working-container\": container not known"
 }
 
 @test "commit-alternate-storage" {
+  _prefetch alpine
   echo FROM
-  run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json openshift/hello-openshift
+  run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
   cid=$output
   echo COMMIT
   run_buildah commit --signature-policy ${TESTSDIR}/policy.json $cid "containers-storage:[vfs@${TESTDIR}/root2+${TESTDIR}/runroot2]newimage"
@@ -109,11 +110,11 @@ load helpers
   run_buildah commit --signature-policy ${TESTSDIR}/policy.json $cid
 }
 
-@test "commit should fail with nonexist authfile" {
+@test "commit should fail with nonexistent authfile" {
   _prefetch alpine
   run_buildah from --quiet --pull --signature-policy ${TESTSDIR}/policy.json alpine
   cid=$output
-  run_buildah 125 commit --authfile /tmp/nonexist --signature-policy ${TESTSDIR}/policy.json $cid alpine-image
+  run_buildah 125 commit --authfile /tmp/nonexistent --signature-policy ${TESTSDIR}/policy.json $cid alpine-image
 }
 
 @test "commit-builder-identity" {
@@ -242,4 +243,15 @@ load helpers
   expect_output --substring "1970"
 
   rm -rf ${TESTDIR}/tmp
+}
+
+@test "commit with authfile" {
+  _prefetch busybox
+  run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+  run_buildah run $cid touch /test
+
+  run_buildah login --authfile ${TESTDIR}/test.auth --username testuser --password testpassword --tls-verify=false localhost:5000
+  run_buildah commit --authfile ${TESTDIR}/test.auth --signature-policy ${TESTSDIR}/policy.json --tls-verify=false $cid docker://localhost:5000/buildah/my-busybox
+  expect_output --substring "Writing manifest to image destination"
 }

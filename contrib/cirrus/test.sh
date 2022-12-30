@@ -4,7 +4,7 @@ set -e
 
 source $(dirname $0)/lib.sh
 
-req_env_var IN_PODMAN IN_PODMAN_NAME GOSRC 1
+req_env_vars IN_PODMAN IN_PODMAN_NAME GOSRC 1
 
 if [[ "$IN_PODMAN" == "true" ]]
 then
@@ -12,8 +12,7 @@ then
     # Host build environment != container environment
     showrun make clean
     in_podman --rm $IN_PODMAN_NAME:latest $0 $1
-elif [[ -z "$CROSS_TARGET" ]]
-then
+else
     cd $GOSRC
 
     showrun make
@@ -41,30 +40,26 @@ then
             showrun make test-unit
             ;;
         conformance)
-            case "$OS_RELEASE_ID" in
-            fedora)
-                warn "Installing moby-engine"
-                dnf install -y moby-engine
-                systemctl enable --now docker
-                ;;
-            ubuntu)
-                warn "Installing docker.io"
-                $LONG_APTGET install docker.io
-                systemctl enable --now docker
-                ;;
-            *)
+            # Typically it's undesirable to install packages at runtime.
+            # This test compares images built with the "latest" version
+            # of docker, against images built with buildah. Runtime installs
+            # are required to ensure the latest docker version is used.
+            [[ "$OS_RELEASE_ID" == "ubuntu" ]] || \
                 bad_os_id_ver
-                ;;
-            esac
+
+            systemctl enable --now docker
             showrun make test-conformance
             ;;
         integration)
+            # FIXME: drop the `rm` below once containers.conf has been fixed.
+            # It complains about failing to "to decode the keys ["secret"
+            # "secret.opts"]" which is in process of getting fixed but will
+            # take a while until it hits all distributions.
+            showrun rm /usr/share/containers/containers.conf
             showrun make test-integration
             ;;
         *)
-            die 1 "First parameter to $(basename $0) not supported: '$1'"
+            die "First parameter to $(basename $0) not supported: '$1'"
             ;;
     esac
-else
-    echo "Testing a cross-compiled $CROSS_TARGET target not possible on this platform"
 fi

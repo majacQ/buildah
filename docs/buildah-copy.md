@@ -1,4 +1,4 @@
-# buildah-copy "1" "March 2017" "buildah"
+# buildah-copy "1" "April 2021" "buildah"
 
 ## NAME
 buildah\-copy - Copies the contents of a file, URL, or directory into a container's working directory.
@@ -21,9 +21,30 @@ Defaults to false.
 Note: You can also override the default value of --add-history by setting the
 BUILDAH\_HISTORY environment variable. `export BUILDAH_HISTORY=true`
 
+**--chmod** *permissions*
+
+Sets the access permissions of the destination content. Accepts the numerical format.
+
 **--chown** *owner*:*group*
 
 Sets the user and group ownership of the destination content.
+
+**--contextdir** *directory*
+
+Build context directory. Specifying a context directory causes Buildah to
+chroot into a the context directory. This means copying files pointed at
+by symbolic links outside of the chroot will fail.
+
+**--from** *containerOrImage*
+
+Use the root directory of the specified working container or image as the root
+directory when resolving absolute source paths and the path of the context
+directory.  If an image needs to be pulled, options recognized by `buildah pull`
+can be used.
+
+**--ignorefile** *file*
+
+Path to an alternative .containerignore (.dockerignore) file. Requires \-\-contextdir be specified.
 
 **--quiet**, **-q**
 
@@ -34,6 +55,8 @@ Refrain from printing a digest of the copied content.
 buildah copy containerID '/myapp/app.conf' '/myapp/app.conf'
 
 buildah copy --chown myuser:mygroup containerID '/myapp/app.conf' '/myapp/app.conf'
+
+buildah copy --chmod 660 containerID '/myapp/app.conf' '/myapp/app.conf'
 
 buildah copy containerID '/home/myuser/myproject.go'
 
@@ -47,20 +70,23 @@ buildah copy containerID 'passwd' 'certs.d' /etc
 
 ## FILES
 
-### `.dockerignore`
+### .containerignore/.dockerignore
 
-If the file .dockerignore exists in the context directory, `buildah copy` reads
-its contents. Buildah uses the content to exclude files and directories from
-the context directory, when copying content into the image.
+If the .containerignore/.dockerignore file exists in the context directory,
+`buildah copy` reads its contents. If both exist, then .containerignore is used.
 
-Users can specify a series of Unix shell globals in a .dockerignore file to
+When the \fB\fC\-\-ignorefile\fR option is specified Buildah reads it and
+uses it to decide which content to exclude when copying content into the
+working container.
+
+Users can specify a series of Unix shell glob patterns in an ignore file to
 identify files/directories to exclude.
 
 Buildah supports a special wildcard string `**` which matches any number of
 directories (including zero). For example, **/*.go will exclude all files that
 end with .go that are found in all directories.
 
-Example .dockerignore file:
+Example .containerignore/.dockerignore file:
 
 ```
 # here are files we want to exclude
@@ -79,14 +105,14 @@ Excludes files and directories starting with `output` from any directory.
 Excludes files named src and the directory src as well as any content in it.
 
 Lines starting with ! (exclamation mark) can be used to make exceptions to
-exclusions. The following is an example .dockerignore file that uses this
+exclusions. The following is an example .containerignore/.dockerignore file that uses this
 mechanism:
 ```
 *.doc
 !Help.doc
 ```
 
-Exclude all doc files except Help.doc from the image.
+Exclude all doc files except Help.doc when copying content into the container.
 
 This functionality is compatible with the handling of .dockerignore files described here:
 

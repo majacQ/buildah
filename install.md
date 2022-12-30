@@ -1,21 +1,8 @@
-![buildah logo](https://cdn.rawgit.com/containers/buildah/master/logos/buildah-logo_large.png)
+![buildah logo](https://cdn.rawgit.com/containers/buildah/main/logos/buildah-logo_large.png)
 
 # Installation Instructions
 
 ## Installing packaged versions of buildah
-
-#### [Amazon Linux 2](https://aws.amazon.com/amazon-linux-2/)
-
-The [Kubic project](https://build.opensuse.org/project/show/devel:kubic:libcontainers:stable)
-provides updated packages for CentOS 7 which can be used unmodified on Amazon Linux 2.
-
-```bash
-cd /etc/yum.repos.d/
-sudo wget https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/CentOS_7/devel:kubic:libcontainers:stable.repo
-sudo yum -y install yum-plugin-copr
-sudo yum -y copr enable lsm5/container-selinux
-sudo yum -y install buildah
-```
 
 ### [Arch Linux](https://www.archlinux.org)
 
@@ -34,60 +21,48 @@ sudo yum -y install buildah
 ```
 
 The [Kubic project](https://build.opensuse.org/project/show/devel:kubic:libcontainers:stable)
-provides updated packages for CentOS 7, 8 and Stream.
+provides updated packages for CentOS 8 and CentOS 8 Stream.
 
 ```bash
-# CentOS 7
-sudo curl -L -o /etc/yum.repos.d/devel:kubic:libcontainers:stable.repo https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/CentOS_7/devel:kubic:libcontainers:stable.repo
-sudo yum -y install buildah
-
 # CentOS 8
 sudo dnf -y module disable container-tools
 sudo dnf -y install 'dnf-command(copr)'
 sudo dnf -y copr enable rhcontainerbot/container-selinux
 sudo curl -L -o /etc/yum.repos.d/devel:kubic:libcontainers:stable.repo https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/CentOS_8/devel:kubic:libcontainers:stable.repo
-sudo dnf -y install buildah
+# OPTIONAL FOR RUNC USERS: crun will be installed by default. Install runc first if you prefer runc
+sudo dnf -y --refresh install runc
+# Install Buildah
+sudo dnf -y --refresh install buildah
 
-# CentOS Stream
+# CentOS 8 Stream
 sudo dnf -y module disable container-tools
 sudo dnf -y install 'dnf-command(copr)'
 sudo dnf -y copr enable rhcontainerbot/container-selinux
 sudo curl -L -o /etc/yum.repos.d/devel:kubic:libcontainers:stable.repo https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/CentOS_8_Stream/devel:kubic:libcontainers:stable.repo
-sudo dnf -y install buildah
+# OPTIONAL FOR RUNC USERS: crun will be installed by default. Install runc first if you prefer runc
+sudo dnf -y --refresh install runc
+# Install Buildah
+sudo dnf -y --refresh install buildah
 ```
 
 
 #### [Debian](https://debian.org)
 
-The buildah package is [being worked on](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=928083)
-for inclusion in the default Debian repos.
-
-Alternatively, the [Kubic project](https://build.opensuse.org/project/show/devel:kubic:libcontainers:stable)
-provides packages for Debian 10, testing and unstable.
+The buildah package is available in
+the [Bullseye (testing) branch](https://packages.debian.org/bullseye/buildah), which
+will be the next stable release (Debian 11) as well as Debian Unstable/Sid.
 
 ```bash
-# Debian Unstable/Sid
-echo 'deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Debian_Unstable/ /' > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
-wget -nv https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/Debian_Unstable/Release.key -O Release.key
-
-# Debian Testing
-echo 'deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Debian_Testing/ /' > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
-wget -nv https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/Debian_Testing/Release.key -O Release.key
-
-# Debian 10
-echo 'deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Debian_10/ /' > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
-wget -nv https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/Debian_10/Release.key -O Release.key
-
-sudo apt-key add - < Release.key
-sudo apt-get update -qq
-sudo apt-get -qq -y install buildah
+# Debian Testing/Bullseye or Unstable/Sid
+sudo apt-get update
+sudo apt-get -y install buildah
 ```
 
 
-### [Fedora](https://www.fedoraproject.org), [CentOS](https://www.centos.org)
+### [Fedora](https://www.fedoraproject.org)
 
 ```bash
-sudo yum -y install buildah
+sudo dnf -y install buildah
 ```
 
 ### [Fedora SilverBlue](https://silverblue.fedoraproject.org)
@@ -127,18 +102,12 @@ sudo subscription-manager repos --enable=rhel-7-server-extras-rpms
 sudo yum -y install buildah
 ```
 
-#### [Raspbian](https://raspbian.org)
+#### [Raspberry Pi OS arm64 (beta)](https://downloads.raspberrypi.org/raspios_arm64/images/)
 
-The Kubic project provides packages for Raspbian 10.
+Raspberry Pi OS use the standard Debian's repositories,
+so it is fully compatible with Debian's arm64 repository.
+You can simply follow the [steps for Debian](#debian) to install buildah.
 
-```bash
-# Raspbian 10
-echo 'deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/Raspbian_10/ /' > /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
-wget -nv https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable/Raspbian_10/Release.key -O Release.key
-sudo apt-key add - < Release.key
-sudo apt-get update -qq
-sudo apt-get -qq -y install buildah
-```
 
 ### [RHEL8 Beta](https://www.redhat.com/en/blog/powering-its-future-while-preserving-present-introducing-red-hat-enterprise-linux-8-beta?intcmp=701f2000001Cz6OAAS)
 
@@ -149,7 +118,25 @@ sudo yum module install -y buildah
 
 ### [Ubuntu](https://www.ubuntu.com)
 
-The Kubic project provides packages for Ubuntu 18.04, 19.04 and 19.10 (it should also work with direct derivatives like Pop!\_OS).
+The buildah package is available in the official repositories for Ubuntu 20.10
+and newer.
+
+```bash
+# Ubuntu 20.10 and newer
+sudo apt-get -y update
+sudo apt-get -y install buildah
+```
+
+If you would prefer newer (though not as well-tested) packages,
+the [Kubic project](https://build.opensuse.org/package/show/devel:kubic:libcontainers:stable/buildah)
+provides packages for active Ubuntu releases 20.04 and newer (it should also work with direct derivatives like Pop!\_OS).
+The packages in Kubic project repos are more frequently updated than the one in Ubuntu's official repositories, due to how Debian/Ubuntu works.
+Checkout the Kubic project page for a list of supported Ubuntu version and architecture combinations.
+The build sources for the Kubic packages can be found [here](https://gitlab.com/rhcontainerbot/buildah/-/tree/debian/debian).
+
+CAUTION: On Ubuntu 20.10 and newer, we highly recommend you use Buildah, Podman and Skopeo ONLY from EITHER the Kubic repo
+OR the official Ubuntu repos. Mixing and matching may lead to unpredictable situations including installation conflicts.
+
 
 ```bash
 . /etc/os-release
@@ -166,9 +153,7 @@ sudo apt-get -qq -y install buildah
 
 ### Kernel Version Requirements
 To run Buildah on Red Hat Enterprise Linux or CentOS, version 7.4 or higher is required.
-On other Linux distributions Buildah requires a kernel version of 4.0 or
-higher in order to support the OverlayFS filesystem.  The kernel version can be checked
-with the 'uname -a' command.
+On other Linux distributions Buildah requires a kernel version that supports the OverlayFS and/or fuse-overlayfs filesystem -- you'll need to consult your distribution's documentation to determine a minimum version number.
 
 ### runc Requirement
 
@@ -206,7 +191,7 @@ The CNI library needs to be configured so that it will know which plugins to
 call to set up namespaces.  Usually, this configuration takes the form of one
 or more configuration files in the `/etc/cni/net.d` directory.  A set of example
 configuration files is included in the
-[`docs/cni-examples`](https://github.com/containers/buildah/tree/master/docs/cni-examples)
+[`docs/cni-examples`](https://github.com/containers/buildah/tree/main/docs/cni-examples)
 directory of this source tree.
 
 ## Package Installation
@@ -368,9 +353,9 @@ This project is using [go modules](https://github.com/golang/go/wiki/Modules) fo
 The following configuration files are required in order for Buildah to run appropriately.  The
 majority of these files are commonly contained in the `containers-common` package.
 
-### [registries.conf](https://github.com/containers/buildah/blob/master/docs/samples/registries.conf)
+### [registries.conf](https://github.com/containers/buildah/blob/main/docs/samples/registries.conf)
 
-#### Man Page: [registries.conf.5](https://github.com/containers/image/blob/master/docs/containers-registries.conf.5.md)
+#### Man Page: [registries.conf.5](https://github.com/containers/image/blob/main/docs/containers-registries.conf.5.md)
 
 `/etc/containers/registries.conf`
 
@@ -407,7 +392,7 @@ registries = []
 registries = []
 ```
 
-### [mounts.conf](https://src.fedoraproject.org/rpms/skopeo/blob/master/f/mounts.conf)
+### [mounts.conf](https://src.fedoraproject.org/rpms/skopeo/blob/main/f/mounts.conf)
 
 `/usr/share/containers/mounts.conf` and optionally `/etc/containers/mounts.conf`
 
@@ -426,7 +411,7 @@ cat /usr/share/containers/mounts.conf
 /usr/share/rhel/secrets:/run/secrets
 ```
 
-### [seccomp.json](https://src.fedoraproject.org/rpms/skopeo/blob/master/f/seccomp.json)
+### [seccomp.json](https://src.fedoraproject.org/rpms/skopeo/blob/main/f/seccomp.json)
 
 `/usr/share/containers/seccomp.json`
 
@@ -435,11 +420,11 @@ containers.  This file is usually provided by the containers-common package.
 
 The link above takes you to the seccomp.json
 
-### [policy.json](https://github.com/containers/skopeo/blob/master/default-policy.json)
+### [policy.json](https://github.com/containers/skopeo/blob/main/default-policy.json)
 
 `/etc/containers/policy.json`
 
-#### Man Page: [policy.json.5](https://github.com/containers/image/blob/master/docs/policy.json.md)
+#### Man Page: [policy.json.5](https://github.com/containers/image/blob/main/docs/policy.json.md)
 
 
 #### Example from the Fedora `containers-common` package:
@@ -460,6 +445,13 @@ cat /etc/containers/policy.json
 		}
 	}
 }
+```
+
+## Debug with Delve and the like
+
+To make a source debug build without optimizations use `DEBUG=1`, like:
+```
+make all DEBUG=1
 ```
 
 ## Vendoring

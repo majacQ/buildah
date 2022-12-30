@@ -25,9 +25,9 @@ load helpers
 
 @test "remove multiple images" {
   _prefetch alpine busybox
-  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json alpine
+  run_buildah from --pull=false --quiet --signature-policy ${TESTSDIR}/policy.json alpine
   cid2=$output
-  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  run_buildah from --pull=false --quiet --signature-policy ${TESTSDIR}/policy.json busybox
   cid3=$output
   run_buildah 125 rmi alpine busybox
   run_buildah images -q
@@ -40,10 +40,9 @@ load helpers
 
 @test "remove multiple non-existent images errors" {
   run_buildah 125 rmi image1 image2 image3
-  expect_output --from="${lines[0]}" "could not get image \"image1\": identifier is not an image" "output line 1"
-  expect_output --from="${lines[1]}" "could not get image \"image2\": identifier is not an image" "output line 2"
-  expect_output --from="${lines[2]}" "could not get image \"image3\": identifier is not an image" "output line 3"
-  [ $(wc -l <<< "$output") -gt 2 ]
+  expect_output --from="${lines[1]}" --substring " image1: image not known"
+  expect_output --from="${lines[2]}" --substring " image2: image not known"
+  expect_output --from="${lines[3]}" --substring " image3: image not known"
 }
 
 @test "remove all images" {
@@ -80,7 +79,7 @@ load helpers
   createrandom ${TESTDIR}/randomfile
   createrandom ${TESTDIR}/other-randomfile
 
-  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  run_buildah from --pull=false --quiet --signature-policy ${TESTSDIR}/policy.json busybox
   cid=$output
 
   run_buildah images -q
@@ -114,6 +113,63 @@ load helpers
   expect_output ""
 }
 
+@test "use prune to remove dangling images with parent" {
+  createrandom ${TESTDIR}/randomfile
+  createrandom ${TESTDIR}/other-randomfile
+
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json scratch
+  cid=$output
+
+  run_buildah images -q -a
+  expect_line_count 0
+
+  run_buildah mount $cid
+  root=$output
+  cp ${TESTDIR}/randomfile $root/randomfile
+  run_buildah unmount $cid
+  run_buildah commit --quiet --signature-policy ${TESTSDIR}/policy.json $cid
+  image=$output
+  run_buildah rm $cid
+
+  run_buildah images -q -a
+  expect_line_count 1
+
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json $image
+  cid=$output
+  run_buildah mount $cid
+  root=$output
+  cp ${TESTDIR}/other-randomfile $root/other-randomfile
+  run_buildah unmount $cid
+  run_buildah commit --signature-policy ${TESTSDIR}/policy.json $cid
+  run_buildah rm $cid
+
+  run_buildah images -q -a
+  expect_line_count 2
+
+  run_buildah rmi --prune
+
+  run_buildah images -q -a
+  expect_line_count 0
+
+  run_buildah images -q -a
+  expect_output ""
+}
+
+@test "attempt to prune non-dangling empty images" {
+  # Regression test for containers/podman/issues/10832
+  ctxdir=${TESTDIR}/bud
+  mkdir -p $ctxdir
+  cat >$ctxdir/Dockerfile <<EOF
+FROM scratch
+ENV test1=test1
+ENV test2=test2
+EOF
+
+  run_buildah bud -t test $ctxdir
+  run_buildah rmi --prune
+  expect_output "" "no image gets pruned"
+}
+
 @test "use conflicting commands to remove images" {
   _prefetch alpine
   run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
@@ -138,22 +194,20 @@ load helpers
 
 @test "remove image that is a parent of another image" {
   _prefetch alpine
-  run_buildah from --quiet --pull=true --signature-policy ${TESTSDIR}/policy.json alpine
+  run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
   cid=$output
   run_buildah config --entrypoint '[ "/ENTRYPOINT" ]' $cid
   run_buildah commit --signature-policy ${TESTSDIR}/policy.json $cid new-image
   run_buildah rm -a
-  run_buildah 125 rmi alpine
-  expect_line_count 2
+
+  # Since it has children, alpine will only be untagged (Podman compat) but not
+  # marked as removed.  However, it won't show up in the image list anymore.
+  run_buildah rmi alpine
+  expect_output --substring "untagged: "
   run_buildah images -q
   expect_line_count 1
   run_buildah images -q -a
-  expect_line_count 2
-
-  local try_to_delete=${lines[1]}
-  run_buildah 125 rmi $try_to_delete
-  expect_output --substring "unable to delete \"$try_to_delete.*\" \(cannot be forced\) - image has dependent child images"
-  run_buildah rmi new-image
+  expect_line_count 1
 }
 
 @test "rmi with cached images" {
@@ -171,8 +225,7 @@ load helpers
   run_buildah images -a -q
   expect_line_count 1
   run_buildah bud --signature-policy ${TESTSDIR}/policy.json --layers -t test3 -f Dockerfile.2 ${TESTSDIR}/bud/use-layers
-  run_buildah 125 rmi alpine
-  expect_line_count 2
+  run_buildah rmi alpine
   run_buildah rmi test3
   run_buildah images -a -q
   expect_output ""

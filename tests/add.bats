@@ -162,14 +162,25 @@ load helpers
   expect_output --substring bin.*bin
 }
 
+@test "add with chmod" {
+  _prefetch busybox
+  createrandom ${TESTDIR}/randomfile
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+  run_buildah add --chmod 777 $cid ${TESTDIR}/randomfile /tmp/random
+  run_buildah run $cid ls -l /tmp/random
+
+  expect_output --substring rwxrwxrwx
+}
+
 @test "add url" {
   _prefetch busybox
   run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
   cid=$output
-  run_buildah add $cid https://github.com/containers/buildah/raw/master/README.md
+  run_buildah add $cid https://github.com/containers/buildah/raw/main/README.md
   run_buildah run $cid ls /README.md
 
-  run_buildah add $cid https://github.com/containers/buildah/raw/master/README.md /home
+  run_buildah add $cid https://github.com/containers/buildah/raw/main/README.md /home
   run_buildah run $cid ls /home/README.md
 }
 
@@ -187,4 +198,86 @@ load helpers
 
   run_buildah add $cid tools/Makefile /
   run_buildah run $cid ls /Makefile
+}
+
+@test "add --ignore" {
+  mytest=${TESTDIR}/mytest
+  mkdir -p ${mytest}
+  touch ${mytest}/mystuff
+  touch ${mytest}/source.go
+  mkdir -p ${mytest}/notmystuff
+  touch ${mytest}/notmystuff/notmystuff
+  cat > ${mytest}/.ignore << _EOF
+*.go
+.ignore
+notmystuff
+_EOF
+
+expect="
+stuff
+stuff/mystuff"
+
+  run_buildah from --signature-policy ${TESTSDIR}/policy.json scratch
+  cid=$output
+
+  run_buildah 125 copy --ignorefile ${mytest}/.ignore $cid ${mytest} /stuff
+  expect_output -- "--ignore options requires that you specify a context dir using --contextdir" "container file list"
+
+  run_buildah add --contextdir=${mytest} --ignorefile ${mytest}/.ignore $cid ${mytest} /stuff
+
+  run_buildah mount $cid
+  mnt=$output
+  run find $mnt -printf "%P\n"
+  filelist=$(LC_ALL=C sort <<<"$output")
+  run_buildah umount $cid
+  expect_output --from="$filelist" "$expect" "container file list"
+}
+
+@test "add quietly" {
+  _prefetch busybox
+  createrandom ${TESTDIR}/randomfile
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+  run_buildah add --quiet $cid ${TESTDIR}/randomfile /tmp/random
+  expect_output ""
+  run_buildah mount $cid
+  croot=$output
+  cmp ${TESTDIR}/randomfile ${croot}/tmp/random
+}
+
+@test "add from container" {
+  _prefetch busybox
+  createrandom ${TESTDIR}/randomfile
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  from=$output
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+  run_buildah add --quiet $from ${TESTDIR}/randomfile /tmp/random
+  expect_output ""
+  run_buildah add --quiet --signature-policy ${TESTSDIR}/policy.json --from $from $cid /tmp/random /tmp/random # absolute path
+  expect_output ""
+  run_buildah add --quiet --signature-policy ${TESTSDIR}/policy.json --from $from $cid  tmp/random /tmp/random2 # relative path
+  expect_output ""
+  run_buildah mount $cid
+  croot=$output
+  cmp ${TESTDIR}/randomfile ${croot}/tmp/random
+  cmp ${TESTDIR}/randomfile ${croot}/tmp/random2
+}
+
+@test "add from image" {
+  _prefetch busybox
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json busybox
+  cid=$output
+  run_buildah add --quiet --signature-policy ${TESTSDIR}/policy.json --from ubuntu $cid /etc/passwd /tmp/passwd # should pull the image, absolute path
+  expect_output ""
+  run_buildah add --quiet --signature-policy ${TESTSDIR}/policy.json --from ubuntu $cid  etc/passwd /tmp/passwd2 # relative path
+  expect_output ""
+  run_buildah from --quiet --signature-policy ${TESTSDIR}/policy.json ubuntu
+  ubuntu=$output
+  run_buildah mount $cid
+  croot=$output
+  run_buildah mount $ubuntu
+  ubuntu=$output
+  cmp $ubuntu/etc/passwd ${croot}/tmp/passwd
+  cmp $ubuntu/etc/passwd ${croot}/tmp/passwd2
 }

@@ -4,7 +4,7 @@ set -e
 
 source $(dirname $0)/lib.sh
 
-req_env_var CI GOSRC OS_RELEASE_ID
+req_env_vars CI GOSRC OS_RELEASE_ID
 
 case $1 in
     audit)
@@ -19,6 +19,7 @@ case $1 in
     podman) showrun podman system info ;;
     buildah_version) showrun $GOSRC/bin/buildah version;;
     buildah_info) showrun $GOSRC/bin/buildah info;;
+    golang) showrun go version;;
     packages)
         # These names are common to Fedora and Ubuntu
         PKG_NAMES=(\
@@ -28,7 +29,9 @@ case $1 in
                     containernetworking-plugins
                     containers-common
                     crun
-                    golang
+                    cri-o-runc
+                    libseccomp
+                    libseccomp2
                     podman
                     runc
                     skopeo
@@ -46,5 +49,5 @@ case $1 in
         # Any not-present packages will be listed as such
         $PKG_LST_CMD ${PKG_NAMES[@]} | sort -u
         ;;
-    *) die 1 "Warning, $(basename $0) doesn't know how to handle the parameter '$1'"
+    *) die "Warning, $(basename $0) doesn't know how to handle the parameter '$1'"
 esac

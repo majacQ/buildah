@@ -1,12 +1,14 @@
 package main
 
 import (
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/containers/buildah/define"
 	"github.com/containers/buildah/imagebuildah"
 	buildahcli "github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
@@ -67,7 +69,6 @@ func init() {
 	// BUD is a all common flags
 	budFlags := buildahcli.GetBudFlags(&budFlagResults)
 	budFlags.StringVar(&budFlagResults.Runtime, "runtime", util.Runtime(), "`path` to an alternate runtime. Use BUILDAH_RUNTIME environment variable to override.")
-	flags.StringSliceVar(&budFlagResults.DecryptionKeys, "decryption-key", nil, "key needed to decrypt the image")
 
 	layerFlags := buildahcli.GetLayerFlags(&layerFlagsResults)
 	fromAndBudFlags, err := buildahcli.GetFromAndBudFlags(&fromAndBudResults, &userNSResults, &namespaceResults)
@@ -110,15 +111,15 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		return err
 	}
 
-	pullPolicy := imagebuildah.PullIfMissing
+	pullPolicy := define.PullIfMissing
 	if iopts.Pull {
-		pullPolicy = imagebuildah.PullIfNewer
+		pullPolicy = define.PullIfNewer
 	}
 	if iopts.PullAlways {
-		pullPolicy = imagebuildah.PullAlways
+		pullPolicy = define.PullAlways
 	}
 	if iopts.PullNever {
-		pullPolicy = imagebuildah.PullNever
+		pullPolicy = define.PullNever
 	}
 	logrus.Debugf("Pull Policy for pull [%v]", pullPolicy)
 
@@ -129,7 +130,12 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 			if len(av) > 1 {
 				args[av[0]] = av[1]
 			} else {
-				delete(args, av[0])
+				// check if the env is set in the local environment and use that value if it is
+				if val, present := os.LookupEnv(av[0]); present {
+					args[av[0]] = val
+				} else {
+					delete(args, av[0])
+				}
 			}
 		}
 	}
@@ -155,7 +161,7 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		}
 	} else {
 		// The context directory could be a URL.  Try to handle that.
-		tempDir, subDir, err := imagebuildah.TempDirForURL("", "buildah", cliArgs[0])
+		tempDir, subDir, err := define.TempDirForURL("", "buildah", cliArgs[0])
 		if err != nil {
 			return errors.Wrapf(err, "error prepping temporary context directory")
 		}
@@ -164,7 +170,7 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 			// Delete it later.
 			defer func() {
 				if err = os.RemoveAll(tempDir); err != nil {
-					logrus.Errorf("error removing temporary directory %q: %v", contextDir, err)
+					logrus.Errorf("error removing temporary directory: %v", err)
 				}
 			}()
 			contextDir = filepath.Join(tempDir, subDir)
@@ -172,7 +178,7 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 			// Nope, it was local.  Use it as is.
 			absDir, err := filepath.Abs(cliArgs[0])
 			if err != nil {
-				return errors.Wrapf(err, "error determining path to directory %q", cliArgs[0])
+				return errors.Wrapf(err, "error determining path to directory")
 			}
 			contextDir = absDir
 		}
@@ -198,6 +204,10 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		return errors.Wrapf(err, "error evaluating symlinks in build context path")
 	}
 
+	var stdin io.Reader
+	if iopts.Stdin {
+		stdin = os.Stdin
+	}
 	var stdout, stderr, reporter *os.File
 	stdout = os.Stdout
 	stderr = os.Stderr
@@ -263,16 +273,16 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 	}
 
 	if c.Flag("cache-from").Changed {
-		logrus.Debugf("build caching not enabled so --cache-from flag has no effect")
+		logrus.Debugf("build --cache-from not enabled, has no effect")
 	}
 
 	if c.Flag("compress").Changed {
 		logrus.Debugf("--compress option specified but is ignored")
 	}
 
-	compression := imagebuildah.Gzip
+	compression := define.Gzip
 	if iopts.DisableCompression {
-		compression = imagebuildah.Uncompressed
+		compression = define.Uncompressed
 	}
 
 	if c.Flag("disable-content-trust").Changed {
@@ -281,15 +291,13 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 
 	namespaceOptions, networkPolicy, err := parse.NamespaceOptions(c)
 	if err != nil {
-		return errors.Wrapf(err, "error parsing namespace-related options")
+		return err
 	}
 	usernsOption, idmappingOptions, err := parse.IDMappingOptions(c, isolation)
 	if err != nil {
 		return errors.Wrapf(err, "error parsing ID mapping options")
 	}
 	namespaceOptions.AddOrReplace(usernsOption...)
-
-	defaultsMountFile, _ := c.PersistentFlags().GetString("defaults-mount-file")
 
 	imageOS, arch, err := parse.PlatformFromOptions(c)
 	if err != nil {
@@ -301,7 +309,7 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		return errors.Wrapf(err, "unable to obtain decrypt config")
 	}
 
-	options := imagebuildah.BuildOptions{
+	options := define.BuildOptions{
 		AddCapabilities:         iopts.CapAdd,
 		AdditionalTags:          tags,
 		Annotations:             iopts.Annotation,
@@ -314,16 +322,20 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		Compression:             compression,
 		ConfigureNetwork:        networkPolicy,
 		ContextDirectory:        contextDir,
-		DefaultMountsFilePath:   defaultsMountFile,
+		DefaultMountsFilePath:   globalFlagResults.DefaultMountsFile,
 		Devices:                 iopts.Devices,
 		DropCapabilities:        iopts.CapDrop,
 		Err:                     stderr,
 		ForceRmIntermediateCtrs: iopts.ForceRm,
+		From:                    iopts.From,
 		IDMappingOptions:        idmappingOptions,
 		IIDFile:                 iopts.Iidfile,
+		In:                      stdin,
 		Isolation:               isolation,
 		Labels:                  iopts.Label,
 		Layers:                  layers,
+		LogRusage:               iopts.LogRusage,
+		Manifest:                iopts.Manifest,
 		MaxPullPushRetries:      maxPullPushRetries,
 		NamespaceOptions:        namespaceOptions,
 		NoCache:                 iopts.NoCache,
@@ -338,6 +350,7 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		ReportWriter:            reporter,
 		Runtime:                 iopts.Runtime,
 		RuntimeArgs:             runtimeFlags,
+		RusageLogFile:           iopts.RusageLogFile,
 		SignBy:                  iopts.SignBy,
 		SignaturePolicyPath:     iopts.SignaturePolicy,
 		Squash:                  iopts.Squash,
@@ -346,7 +359,13 @@ func budCmd(c *cobra.Command, inputArgs []string, iopts budOptions) error {
 		TransientMounts:         iopts.Volumes,
 		OciDecryptConfig:        decConfig,
 		Jobs:                    &iopts.Jobs,
-		LogRusage:               iopts.LogRusage,
+	}
+	if iopts.IgnoreFile != "" {
+		excludes, err := parseDockerignore(iopts.IgnoreFile)
+		if err != nil {
+			return err
+		}
+		options.Excludes = excludes
 	}
 	if c.Flag("timestamp").Changed {
 		timestamp := time.Unix(iopts.Timestamp, 0).UTC()

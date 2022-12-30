@@ -9,7 +9,7 @@ load helpers
 
   target=pull
   run_buildah 125 --storage-driver=overlay bud --signature-policy ${TESTSDIR}/policy.json -t ${target} --pull-never ${TESTSDIR}/bud/pull
-  expect_output --substring "no such image"
+  expect_output --substring "image not known"
 
   leftover=$(mount | grep $TESTDIR | cat)
   if [ -n "$leftover" ]; then

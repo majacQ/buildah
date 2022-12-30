@@ -1,4 +1,4 @@
-![buildah logo](https://cdn.rawgit.com/containers/buildah/master/logos/buildah-logo_large.png)
+![buildah logo](https://cdn.rawgit.com/containers/buildah/main/logos/buildah-logo_large.png)
 
 # Buildah Tutorial 1
 ## Building OCI container images
@@ -26,7 +26,7 @@ Then install buildah by running:
 
 ## Rootless User Configuration
 
-If you plan to run Buildah as a user without root privileges, i.e. a "rootless user", the administrator of the system might have to do a bit of additional configuration beforehand.  The setup required for this is listed on the Podman GitHub site [here](https://github.com/containers/podman/blob/master/docs/tutorials/rootless_tutorial.md).  Buildah has the same setup and configuration requirements that Podman does for rootless users.
+If you plan to run Buildah as a user without root privileges, i.e. a "rootless user", the administrator of the system might have to do a bit of additional configuration beforehand.  The setup required for this is listed on the Podman GitHub site [here](https://github.com/containers/podman/blob/main/docs/tutorials/rootless_tutorial.md).  Buildah has the same setup and configuration requirements that Podman does for rootless users.
 
 ## Post Installation Verification
 
@@ -98,6 +98,11 @@ So does this container actually do anything? Let's see.
 
 Nope. This really is empty. The package installer `dnf` is not even inside this container. It's essentially an empty layer on top of the kernel. So what can be done with that?  Thankfully there is a `buildah mount` command.
 
+    # scratchmnt=$(buildah mount $newcontainer)
+
+Note: If attempting to mount in rootless mode, the command fails. Mounting an image needs to be done in a different mount namespace. Enter the mount namespace by executing the `buildah unshare` command. See buildah-mount(1) man page for more information.
+
+    $ buildah unshare
     # scratchmnt=$(buildah mount $newcontainer)
 
 By echoing `$scratchmnt` we can see the path for the [overlay image](https://wiki.archlinux.org/index.php/Overlay_filesystem), which gives you a link directly to the root file system of the container.
@@ -276,4 +281,4 @@ Well done. You have learned a lot about Buildah using this short tutorial. Hopef
 
 If you have any suggestions or issues please post them at the [Buildah Issues page](https://github.com/containers/buildah/issues).
 
-For more information on Buildah and how you might contribute please visit the [Buildah home page on Github](https://github.com/containers/buildah).
+For more information on Buildah and how you might contribute please visit the [Buildah home page on GitHub](https://github.com/containers/buildah).

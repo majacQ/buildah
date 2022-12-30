@@ -22,6 +22,7 @@ import (
 
 	"github.com/containers/buildah"
 	"github.com/containers/buildah/copier"
+	"github.com/containers/buildah/define"
 	"github.com/containers/buildah/imagebuildah"
 	"github.com/containers/image/v5/docker/daemon"
 	"github.com/containers/image/v5/image"
@@ -242,6 +243,7 @@ func testConformanceInternal(t *testing.T, dateStamp string, testIndex int) {
 
 	// initialize storage for buildah
 	options := storage.StoreOptions{
+		GraphDriverName:     os.Getenv("STORAGE_DRIVER"),
 		GraphRoot:           rootDir,
 		RunRoot:             runrootDir,
 		RootlessStoragePath: rootDir,
@@ -505,10 +507,10 @@ func buildUsingBuildah(ctx context.Context, t *testing.T, store storage.Store, t
 	}
 	// set up build options
 	output := &bytes.Buffer{}
-	options := imagebuildah.BuildOptions{
+	options := define.BuildOptions{
 		ContextDirectory: contextDir,
-		CommonBuildOpts:  &buildah.CommonBuildOptions{},
-		NamespaceOptions: []buildah.NamespaceOption{{
+		CommonBuildOpts:  &define.CommonBuildOptions{},
+		NamespaceOptions: []define.NamespaceOption{{
 			Name: string(rspec.NetworkNamespace),
 			Host: true,
 		}},
@@ -714,7 +716,7 @@ type FSHeader struct {
 	UID      int               `json:"uid"`
 	GID      int               `json:"gid"`
 	ModTime  time.Time         `json:"mtime,omitempty"`
-	Devmajor int64             `json:"devmanor,omitempty"`
+	Devmajor int64             `json:"devmajor,omitempty"`
 	Devminor int64             `json:"devminor,omitempty"`
 	Xattrs   map[string]string `json:"xattrs,omitempty"`
 	Digest   digest.Digest     `json:"digest,omitempty"`
@@ -928,8 +930,8 @@ func applyLayerToFSTree(t *testing.T, layer *Layer, root *FSEntry) {
 			delete(dirEntry.Children, strings.TrimPrefix(base, ".wh."))
 			continue
 		}
-		// if the item already exists, just make sure we're not trying
-		// to turn a directory into a non-directory or vice-versa
+		// if the item already exists, make sure we don't get confused
+		// by replacing a directory with a non-directory or vice-versa
 		if child, ok := dirEntry.Children[base]; ok {
 			if child.Children != nil {
 				// it's a directory
@@ -939,8 +941,7 @@ func applyLayerToFSTree(t *testing.T, layer *Layer, root *FSEntry) {
 					child.FSHeader = entry
 					continue
 				}
-				// oh no
-				require.Failf(t, "layer diff error", "layer diff %q includes entry for directory %q, but it already exists and is not a directory", layer.UncompressedDigest, entry.Name)
+				// nope, a directory no longer
 			} else {
 				// it's not a directory
 				if entry.Typeflag != tar.TypeDir {
@@ -949,11 +950,10 @@ func applyLayerToFSTree(t *testing.T, layer *Layer, root *FSEntry) {
 					dirEntry.Children[base].FSHeader = entry
 					continue
 				}
-				// oh no
-				require.Failf(t, "layer diff error", "layer diff %q includes entry for non-directory %q, but it already exists and is a directory", layer.UncompressedDigest, entry.Name)
+				// well, it's a directory now
 			}
 		}
-		// the item doesn't already exist, so we need to add it
+		// the item doesn't already exist, or it needs to be replaced, so we need to add it
 		var children map[string]*FSEntry
 		if entry.Typeflag == tar.TypeDir {
 			// only directory entries can hold items
@@ -1355,7 +1355,12 @@ var internalTestCases = []testCase{
 	{
 		name:       "copy from symlink source",
 		contextDir: "copysymlink",
-		fsSkip:     []string{},
+	},
+
+	{
+		name:       "copy-symlink-2",
+		contextDir: "copysymlink",
+		dockerfile: "Dockerfile2",
 	},
 
 	{
@@ -1372,6 +1377,12 @@ var internalTestCases = []testCase{
 		name:       "copy to renamed file",
 		contextDir: "copyrename",
 		fsSkip:     []string{"(dir):usr:(dir):bin:mtime"},
+	},
+
+	{
+		name:       "copy with --chown",
+		contextDir: "copychown",
+		fsSkip:     []string{"(dir):usr:(dir):bin:mtime", "(dir):usr:(dir):local:(dir):bin:mtime"},
 	},
 
 	{
@@ -1440,15 +1451,18 @@ var internalTestCases = []testCase{
 		contextDir:      "mount",
 		buildahRegex:    "/tmp/test/file.*?regular file.*?/tmp/test/file2.*?regular file",
 		withoutDocker:   true,
-		transientMounts: []string{"@@TEMPDIR@@:/tmp/test"},
+		transientMounts: []string{"@@TEMPDIR@@:/tmp/test" + selinuxMountFlag()},
 	},
 
 	{
-		name:            "transient-mount",
-		contextDir:      "transientmount",
-		buildahRegex:    "file2.*?FROM busybox ENV name value",
-		withoutDocker:   true,
-		transientMounts: []string{"@@TEMPDIR@@:/mountdir", "@@TEMPDIR@@/Dockerfile.env:/mountfile"},
+		name:          "transient-mount",
+		contextDir:    "transientmount",
+		buildahRegex:  "file2.*?FROM busybox ENV name value",
+		withoutDocker: true,
+		transientMounts: []string{
+			"@@TEMPDIR@@:/mountdir" + selinuxMountFlag(),
+			"@@TEMPDIR@@/Dockerfile.env:/mountfile" + selinuxMountFlag(),
+		},
 	},
 
 	{
@@ -1471,7 +1485,8 @@ var internalTestCases = []testCase{
 	},
 
 	{
-		name: "add-permissions",
+		name:          "add-permissions",
+		withoutDocker: true,
 		dockerfileContents: strings.Join([]string{
 			"FROM scratch",
 			fmt.Sprintf("# Does ADD preserve permissions differently for archives and files?"),
@@ -1914,6 +1929,36 @@ var internalTestCases = []testCase{
 	},
 
 	{
+		name: "copy-multiple-missing-file-with-glob",
+		dockerfileContents: strings.Join([]string{
+			"FROM scratch",
+			"COPY file-z.txt subdir-* subdir/",
+		}, "\n"),
+		contextDir:   "dockerignore/populated",
+		shouldFailAt: 2,
+	},
+
+	{
+		name: "copy-multiple-missing-file-with-nomatch-on-glob",
+		dockerfileContents: strings.Join([]string{
+			"FROM scratch",
+			"COPY missing* subdir/",
+		}, "\n"),
+		contextDir:   "dockerignore/populated",
+		shouldFailAt: 2,
+	},
+
+	{
+		name: "copy-multiple-some-missing-glob",
+		dockerfileContents: strings.Join([]string{
+			"FROM scratch",
+			"COPY file-a.txt subdir-* file-?.txt missing* subdir/",
+		}, "\n"),
+		contextDir: "dockerignore/populated",
+		fsSkip:     []string{"(dir):subdir:mtime"},
+	},
+
+	{
 		name: "file-in-workdir-in-other-stage",
 		dockerfileContents: strings.Join([]string{
 			"FROM scratch AS base",
@@ -1943,6 +1988,44 @@ var internalTestCases = []testCase{
 		contextDir:   "dockerignore/integration3",
 		shouldFailAt: 4,
 		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
+  <<<<<<< release-1.17
+  =======
+	},
+
+	{
+		name:       "copy-empty-1",
+		contextDir: "copyempty",
+		dockerfile: "Dockerfile",
+		fsSkip:     []string{"(dir):usr:(dir):local:mtime", "(dir):usr:(dir):local:(dir):tmp:mtime"},
+	},
+
+	{
+		name:       "copy-empty-2",
+		contextDir: "copyempty",
+		dockerfile: "Dockerfile2",
+		fsSkip:     []string{"(dir):usr:(dir):local:mtime", "(dir):usr:(dir):local:(dir):tmp:mtime"},
+	},
+
+	{
+		name:       "copy-absolute-directory-1",
+		contextDir: "copyblahblub",
+		dockerfile: "Dockerfile",
+		fsSkip:     []string{"(dir):var:mtime"},
+	},
+
+	{
+		name:       "copy-absolute-directory-2",
+		contextDir: "copyblahblub",
+		dockerfile: "Dockerfile2",
+		fsSkip:     []string{"(dir):var:mtime"},
+	},
+
+	{
+		name:       "copy-absolute-directory-3",
+		contextDir: "copyblahblub",
+		dockerfile: "Dockerfile3",
+		fsSkip:     []string{"(dir):var:mtime"},
+  >>>>>>> release-1.22
 	},
 	{
 		name: "multi-stage-through-base",
@@ -1971,9 +2054,10 @@ var internalTestCases = []testCase{
 	},
 
 	{
-		name:       "dockerignore-minimal-test", // from #2237
-		contextDir: "dockerignore/minimal_test",
-		fsSkip:     []string{"(dir):tmp:mtime", "(dir):tmp:(dir):stuff:mtime"},
+		name:          "dockerignore-minimal-test", // from #2237
+		contextDir:    "dockerignore/minimal_test",
+		withoutDocker: true,
+		fsSkip:        []string{"(dir):tmp:mtime", "(dir):tmp:(dir):stuff:mtime"},
 	},
 
 	{
@@ -2601,6 +2685,24 @@ var internalTestCases = []testCase{
 	},
 
 	{
+		name:       "add-parent-symlink",
+		contextDir: "add/parent-symlink",
+		fsSkip:     []string{"(dir):testsubdir:mtime"},
+	},
+
+	{
+		name:       "add-parent-dangling",
+		contextDir: "add/parent-dangling",
+		fsSkip:     []string{"(dir):symlink:mtime", "(dir):symlink-target:mtime"},
+	},
+
+	{
+		name:       "add-parent-clean",
+		contextDir: "add/parent-clean",
+		fsSkip:     []string{"(dir):symlink:mtime", "(dir):symlink-target:mtime", "(dir):symlink-target:(dir):subdirectory:mtime"},
+	},
+
+	{
 		name:       "add-archive-1",
 		contextDir: "add/archive",
 		dockerfile: "Dockerfile.1",
@@ -2647,6 +2749,21 @@ var internalTestCases = []testCase{
 	},
 
 	{
+		name:       "add-dir-not-dir",
+		contextDir: "add/dir-not-dir",
+	},
+
+	{
+		name:       "add-not-dir-dir",
+		contextDir: "add/not-dir-dir",
+	},
+
+	{
+		name:       "add-populated-dir-not-dir",
+		contextDir: "add/populated-dir-not-dir",
+	},
+
+	{
 		name:         "dockerignore-allowlist-subdir-nofile-dir",
 		contextDir:   "dockerignore/allowlist/subdir-nofile",
 		shouldFailAt: 2,
@@ -2689,9 +2806,10 @@ var internalTestCases = []testCase{
 		// included in the build context archive, so they only get
 		// created implicitly when extracted, so there's no point in us
 		// trying to preserve any of that, either
-		name:       "dockerignore-allowlist-subsubdir-file",
-		contextDir: "dockerignore/allowlist/subsubdir-file",
-		fsSkip:     []string{"(dir):folder:mtime", "(dir):folder:(dir):subfolder:mtime", "file:mtime"},
+		name:          "dockerignore-allowlist-subsubdir-file",
+		contextDir:    "dockerignore/allowlist/subsubdir-file",
+		withoutDocker: true,
+		fsSkip:        []string{"(dir):folder:mtime", "(dir):folder:(dir):subfolder:mtime", "file:mtime"},
 	},
 
 	{
@@ -2707,8 +2825,9 @@ var internalTestCases = []testCase{
 	},
 
 	{
-		name:       "dockerignore-allowlist-alternating",
-		contextDir: "dockerignore/allowlist/alternating",
+		name:          "dockerignore-allowlist-alternating",
+		contextDir:    "dockerignore/allowlist/alternating",
+		withoutDocker: true,
 		fsSkip: []string{
 			"(dir):subdir1:mtime",
 			"(dir):subdir1:(dir):subdir2:(dir):subdir3:mtime",
@@ -2734,11 +2853,20 @@ var internalTestCases = []testCase{
 		contextDir:   "dockerignore/allowlist/alternating-other",
 		shouldFailAt: 7,
 		failureRegex: "(no such file or directory)|(file not found)|(file does not exist)",
+  <<<<<<< release-1.17
+  =======
 	},
 
 	{
-		name:       "tar-g",
-		contextDir: "tar-g",
-		fsSkip:     []string{"(dir):tmp:mtime"},
+		name:          "tar-g",
+		contextDir:    "tar-g",
+		withoutDocker: true,
+		fsSkip:        []string{"(dir):tmp:mtime"},
+  >>>>>>> release-1.22
+	},
+
+	{
+		name:       "replace-symlink-with-directory",
+		contextDir: "replace/symlink-with-directory",
 	},
 }

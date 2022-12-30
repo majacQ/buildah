@@ -153,6 +153,20 @@ load helpers
 	expect_output "/tmp" "invalid cmd & entrypoint, pwd"
 }
 
+# Helper for run-user test. Generates a UID or GID that is not present
+# in the given idfile (mounted /etc/passwd or /etc/group)
+function random_unused_id() {
+    local idfile=$1
+
+    while :;do
+        id=$RANDOM
+        if ! fgrep -q :$id: $idfile; then
+            echo $id
+            return
+        fi
+    done
+}
+
 function configure_and_check_user() {
     local setting=$1
     local expect_u=$2
@@ -183,10 +197,10 @@ function configure_and_check_user() {
 	testuser=jimbo
 	testbogususer=nosuchuser
 	testgroup=jimbogroup
-	testuid=$RANDOM
-	testotheruid=$RANDOM
-	testgid=$RANDOM
-	testgroupid=$RANDOM
+	testuid=$(random_unused_id $root/etc/passwd)
+	testotheruid=$(random_unused_id $root/etc/passwd)
+	testgid=$(random_unused_id $root/etc/group)
+	testgroupid=$(random_unused_id $root/etc/group)
 	echo "$testuser:x:$testuid:$testgid:Jimbo Jenkins:/home/$testuser:/bin/sh" >> $root/etc/passwd
 	echo "$testgroup:x:$testgroupid:" >> $root/etc/group
 
@@ -213,8 +227,25 @@ function configure_and_check_user() {
 	expect_output --substring "unknown user" "run as unknown user"
 }
 
+@test "run --env" {
+	skip_if_no_runtime
+
+	_prefetch alpine
+	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
+	cid=$output
+	run_buildah config --env foo=foo $cid
+	# Ensure foo=foo from `buildah config`
+	run_buildah run $cid -- /bin/sh -c 'echo $foo'
+	expect_output "foo"
+	# Ensure foo=bar from --env override
+	run_buildah run --env foo=bar $cid -- /bin/sh -c 'echo $foo'
+	expect_output "bar"
+	# Ensure that the --env override did not persist
+	run_buildah run $cid -- /bin/sh -c 'echo $foo'
+	expect_output "foo"
+}
+
 @test "run --hostname" {
-	skip_if_rootless
 	skip_if_no_runtime
 
 	_prefetch alpine
@@ -251,6 +282,57 @@ function configure_and_check_user() {
 	run_buildah run -v ${TESTDIR}/was-empty:/var/multi-level/subdirectory        $cid touch /var/multi-level/subdirectory/testfile
 	# And check the same for file volumes.
 	run_buildah run -v ${TESTDIR}/was-empty/testfile:/var/different-multi-level/subdirectory/testfile        $cid touch /var/different-multi-level/subdirectory/testfile
+	# And check the same for file volumes.
+	# Make sure directories show up inside of container on builtin mounts
+	run_buildah run -v ${TESTDIR}/was-empty:/run/secrets/testdir $cid ls -ld /run/secrets/testdir
+}
+
+@test "run --volume with U flag" {
+  skip_if_no_runtime
+
+  # Create source volume.
+  mkdir ${TESTDIR}/testdata
+
+  # Create the container.
+  _prefetch alpine
+  run_buildah from --signature-policy ${TESTSDIR}/policy.json alpine
+  ctr="$output"
+
+  # Test user can create file in the mounted volume.
+  run_buildah run --user 888:888 --volume ${TESTDIR}/testdata:/mnt:z,U "$ctr" touch /mnt/testfile1.txt
+
+  # Test created file has correct UID and GID ownership.
+  run_buildah run --user 888:888 --volume ${TESTDIR}/testdata:/mnt:z,U "$ctr" stat -c "%u:%g" /mnt/testfile1.txt
+  expect_output "888:888"
+}
+
+@test "run --user and verify gid in supplemental groups" {
+  skip_if_no_runtime
+
+  # Create the container.
+  _prefetch alpine
+  run_buildah from $WITH_POLICY_JSON alpine
+  ctr="$output"
+
+  # Run with uid:gid 1000:1000 and verify if gid is present in additional groups
+  run_buildah run --user 1000:1000 "$ctr" cat /proc/self/status
+  # gid 1000 must be in additional/supplemental groups
+  expect_output --substring "Groups:	1000 "
+}
+
+@test "run --workingdir" {
+	skip_if_no_runtime
+
+	_prefetch alpine
+	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
+	cid=$output
+	run_buildah run $cid pwd
+	expect_output "/"
+	run_buildah run --workingdir /bin $cid pwd
+	expect_output "/bin"
+	# Ensure the /bin workingdir override did not persist
+	run_buildah run $cid pwd
+	expect_output "/"
 }
 
 @test "run --mount" {
@@ -320,6 +402,14 @@ function configure_and_check_user() {
 
 @test "Check if containers run with correct open files/processes limits" {
 	skip_if_no_runtime
+
+	# we need to not use the list of limits that are set in our default
+	# ${TESTSDIR}/containers.conf for the sake of other tests, and override
+	# any that might be picked up from system-wide configuration
+	echo '[containers]' > ${TESTDIR}/containers.conf
+	echo 'default_ulimits = []' >> ${TESTDIR}/containers.conf
+	export CONTAINERS_CONF=${TESTDIR}/containers.conf
+
 	_prefetch alpine
 	maxpids=$(cat /proc/sys/kernel/pid_max)
 	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
@@ -344,12 +434,14 @@ function configure_and_check_user() {
 	expect_output "300" "limits: open files (w/file & proc limits)"
 	run_buildah run $cid awk '/processes/{print $3}' /proc/self/limits
 	expect_output "100" "limits: processes (w/file & proc limits)"
+
+	unset CONTAINERS_CONF
 }
 
 @test "run-builtin-volume-omitted" {
 	# This image is known to include a volume, but not include the mountpoint
 	# in the image.
-	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json docker.io/library/registry@sha256:a25e4660ed5226bdb59a5e555083e08ded157b1218282840e55d25add0223390
+	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json quay.io/libpod/registry:volume_omitted
 	cid=$output
 	run_buildah mount $cid
 	mnt=$output
@@ -392,6 +484,23 @@ function configure_and_check_user() {
 	# test a standard mount to /run/.containerenv
 	run_buildah run $cid ls -1 /run/.containerenv
 	expect_output --substring "/run/.containerenv"
+
+	run_buildah run $cid sh -c '. /run/.containerenv; echo $engine'
+	expect_output --substring "buildah"
+
+	run_buildah run $cid sh -c '. /run/.containerenv; echo $name'
+	expect_output "alpine-working-container"
+
+	run_buildah run $cid sh -c '. /run/.containerenv; echo $image'
+	expect_output --substring "alpine:latest"
+
+	rootless=0
+	if ["$(id -u)" -ne 0 ]; then
+		rootless=1
+	fi
+
+	run_buildah run $cid sh -c '. /run/.containerenv; echo $rootless'
+	expect_output ${rootless}
 }
 
 @test "run-device" {
@@ -431,7 +540,9 @@ function configure_and_check_user() {
 
 	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json debian
 	cid=$output
-	run_buildah run --isolation=chroot --network=container $cid cat /etc/hosts 
+	run_buildah 125 run --isolation=chroot --network=bogus $cid cat /etc/hosts
+	expect_output "checking network namespace: stat bogus: no such file or directory"
+	run_buildah run --isolation=chroot --network=container $cid cat /etc/hosts
 	expect_output --substring "# Generated by Buildah"
 	m=$(buildah mount $cid)
 	run cat $m/etc/hosts
@@ -441,7 +552,7 @@ function configure_and_check_user() {
 
 	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json debian
 	cid=$output
-	run_buildah run --isolation=chroot --network=host $cid cat /etc/hosts 
+	run_buildah run --isolation=chroot --network=host $cid cat /etc/hosts
 	expect_output --substring "# Generated by Buildah"
 	m=$(buildah mount $cid)
 	run cat $m/etc/hosts
@@ -468,7 +579,7 @@ function configure_and_check_user() {
 
         run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
         cid=$output
-        run_buildah run --isolation=chroot --network=container $cid cat /etc/resolv.conf 
+        run_buildah run --isolation=chroot --network=container $cid cat /etc/resolv.conf
 	expect_output --substring "nameserver"
         m=$(buildah mount $cid)
 	run cat $m/etc/resolv.conf
@@ -478,7 +589,7 @@ function configure_and_check_user() {
 
         run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
         cid=$output
-        run_buildah run --isolation=chroot --network=host $cid cat /etc/resolv.conf 
+        run_buildah run --isolation=chroot --network=host $cid cat /etc/resolv.conf
 	expect_output --substring "nameserver"
         m=$(buildah mount $cid)
 	run cat $m/etc/resolv.conf
@@ -495,4 +606,89 @@ function configure_and_check_user() {
 	[ "$status" -eq 0 ]
 	expect_output --substring "nameserver 110.110.0.110"
 	run_buildah rm -a
+}
+
+@test "run --user" {
+	skip_if_no_runtime
+
+	_prefetch alpine
+	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
+	cid=$output
+	run_buildah run --user sync $cid whoami
+	expect_output "sync"
+	run_buildah 125 run --user noexist $cid whoami
+	expect_output --substring "unknown user error"
+}
+
+@test "run --runtime --runtime-flag" {
+	skip_if_in_container
+	skip_if_no_runtime
+
+	_prefetch alpine
+
+	# Use seccomp to make crun output a warning message because crun writes few logs.
+	cat > ${TESTDIR}/seccomp.json << _EOF
+{
+    "defaultAction": "SCMP_ACT_ALLOW",
+    "syscalls": [
+        {
+	        "name": "unknown",
+			"action": "SCMP_ACT_KILL"
+	    }
+    ]
+}
+_EOF
+	run_buildah from --security-opt seccomp=${TESTDIR}/seccomp.json --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
+	cid=$output
+
+	local found_runtime=
+
+	if [ -n "$(command -v runc)" ]; then
+		found_runtime=y
+		run_buildah ? run --runtime=runc --runtime-flag=debug $cid true
+		if [ "$status" -eq 0 ]; then
+			[ -n "$output" ]
+		else
+			# runc fully supports cgroup v2 (unified mode) since v1.0.0-rc93.
+			# older runc doesn't work on cgroup v2.
+			expect_output --substring "this version of runc doesn't work on cgroups v2" "should fail by unsupportability for cgroupv2"
+		fi
+	fi
+
+	if [ -n "$(command -v crun)" ]; then
+		found_runtime=y
+		run_buildah run --runtime=crun --runtime-flag=debug $cid true
+		[ -n "$output" ]
+	fi
+
+	if [ -z "${found_runtime}" ]; then
+		skip "Did not find 'runc' nor 'crun' in \$PATH - could not run this test!"
+	fi
+
+}
+
+@test "run --terminal" {
+	skip_if_no_runtime
+
+	_prefetch alpine
+	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
+	cid=$output
+	run_buildah run --terminal=true $cid ls --color=auto
+	colored="$output"
+	run_buildah run --terminal=false $cid ls --color=auto
+	uncolored="$output"
+	[ "$colored" != "$uncolored" ]
+}
+
+@test "run-inheritable-capabilities" {
+	skip_if_no_runtime
+
+	_prefetch alpine
+
+	run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json alpine
+	cid=$output
+	run_buildah run $cid grep ^CapInh: /proc/self/status
+	expect_output "CapInh:	0000000000000000"
+	run_buildah run --cap-add=ALL $cid grep ^CapInh: /proc/self/status
+	expect_output "CapInh:	0000000000000000"
 }

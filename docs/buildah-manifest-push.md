@@ -47,10 +47,6 @@ After copying the image, write the digest of the resulting image to the file.
 
 Manifest list type (oci or v2s2) to use when pushing the list (default is oci).
 
-**--purge**
-
-Delete the manifest list or image index from local storage if pushing succeeds.
-
 **--quiet**, **-q**
 
 Don't output progress information when pushing lists.
@@ -59,13 +55,17 @@ Don't output progress information when pushing lists.
 
 Don't copy signatures when pushing images.
 
+**--rm**
+
+Delete the manifest list or image index from local storage if pushing succeeds.
+
 **--sign-by** *fingerprint*
 
 Sign the pushed images using the GPG key that matches the specified fingerprint.
 
 **--tls-verify** *bool-value*
 
-Require HTTPS and verify certificates when talking to container registries (defaults to true).  TLS verification cannot be used when talking to an insecure registry.
+Require HTTPS and verification of certificates when talking to container registries (defaults to true).  TLS verification cannot be used when talking to an insecure registry.
 
 ## EXAMPLE
 

@@ -1,13 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"strings"
 
 	"github.com/containers/buildah"
 	buildahcli "github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
+	"github.com/containers/buildah/util"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -17,6 +17,7 @@ type runInputOptions struct {
 	addHistory  bool
 	capAdd      []string
 	capDrop     []string
+	env         []string
 	hostname    string
 	isolation   string
 	mounts      []string
@@ -25,6 +26,7 @@ type runInputOptions struct {
 	noPivot     bool
 	terminal    bool
 	volumes     []string
+	workingDir  string
 	*buildahcli.NameSpaceResults
 }
 
@@ -46,7 +48,7 @@ func init() {
 
 		},
 		Example: `buildah run containerID -- ps -auxw
-  buildah run --tty containerID /bin/bash
+  buildah run --terminal containerID /bin/bash
   buildah run --volume /path/on/host:/path/in/container:ro,z containerID /bin/sh`,
 	}
 	runCommand.SetUsageTemplate(UsageTemplate())
@@ -56,20 +58,17 @@ func init() {
 	flags.BoolVar(&opts.addHistory, "add-history", false, "add an entry for this operation to the image's history.  Use BUILDAH_HISTORY environment variable to override. (default false)")
 	flags.StringSliceVar(&opts.capAdd, "cap-add", []string{}, "add the specified capability (default [])")
 	flags.StringSliceVar(&opts.capDrop, "cap-drop", []string{}, "drop the specified capability (default [])")
+	flags.StringArrayVarP(&opts.env, "env", "e", []string{}, "add environment variable to be set temporarily when running command (default [])")
 	flags.StringVar(&opts.hostname, "hostname", "", "set the hostname inside of the container")
-	flags.StringVar(&opts.isolation, "isolation", buildahcli.DefaultIsolation(), "`type` of process isolation to use. Use BUILDAH_ISOLATION environment variable to override.")
+	flags.StringVar(&opts.isolation, "isolation", "", "`type` of process isolation to use. Use BUILDAH_ISOLATION environment variable to override.")
 	// Do not set a default runtime here, we'll do that later in the processing.
-	flags.StringVar(&opts.runtime, "runtime", "", "`path` to an alternate OCI runtime")
+	flags.StringVar(&opts.runtime, "runtime", util.Runtime(), "`path` to an alternate OCI runtime")
 	flags.StringSliceVar(&opts.runtimeFlag, "runtime-flag", []string{}, "add global flags for the container runtime")
 	flags.BoolVar(&opts.noPivot, "no-pivot", false, "do not use pivot root to jail process inside rootfs")
-	// TODO add-third alias for tty
 	flags.BoolVarP(&opts.terminal, "terminal", "t", false, "allocate a pseudo-TTY in the container")
-	flags.BoolVar(&opts.terminal, "tty", false, "allocate a pseudo-TTY in the container")
-	if err := flags.MarkHidden("tty"); err != nil {
-		panic(fmt.Sprintf("error marking tty flag as hidden: %v", err))
-	}
 	flags.StringArrayVarP(&opts.volumes, "volume", "v", []string{}, "bind mount a host location into the container while running the command")
 	flags.StringArrayVar(&opts.mounts, "mount", []string{}, "Attach a filesystem mount to the container (default [])")
+	flags.StringVar(&opts.workingDir, "workingdir", "", "temporarily set working directory for command (default to container's workingdir)")
 
 	userFlags := getUserFlags()
 	namespaceFlags := buildahcli.GetNameSpaceFlags(&namespaceResults)
@@ -119,7 +118,7 @@ func runCmd(c *cobra.Command, args []string, iopts runInputOptions) error {
 
 	namespaceOptions, networkPolicy, err := parse.NamespaceOptions(c)
 	if err != nil {
-		return errors.Wrapf(err, "error parsing namespace-related options")
+		return err
 	}
 
 	options := buildah.RunOptions{
@@ -135,6 +134,8 @@ func runCmd(c *cobra.Command, args []string, iopts runInputOptions) error {
 		CNIConfigDir:     iopts.CNIConfigDir,
 		AddCapabilities:  iopts.capAdd,
 		DropCapabilities: iopts.capDrop,
+		Env:              iopts.env,
+		WorkingDir:       iopts.workingDir,
 	}
 
 	if c.Flag("terminal").Changed {

@@ -324,6 +324,7 @@ return 1
           -h
           --disable-compression
           -D
+          --manifest
           --quiet
           -q
           --rm
@@ -418,11 +419,12 @@ return 1
      --file
      --format
      --http-proxy
+     --ignorefile
      --iidfile
      --isolation
      --ipc
      --label
-     --loglevel
+     --manifest
      -m
      --memory
      --memory-swap
@@ -478,7 +480,6 @@ return 1
      --add-history
      --help
      -t
-     --tty
      --terminal
      -h
   "
@@ -497,7 +498,6 @@ return 1
      --pid
      --runtime
      --runtime-flag
-     --security-opt
      --user
      --uts
      --volume
@@ -532,10 +532,20 @@ return 1
      -h
      --quiet
      -q
+     --tls-verify
+     --remove-signatures
   "
 
      local options_with_args="
      --chown
+     --chmod
+     --contextdir
+     --ignorefile
+     --from
+     --authfile
+     --cert-dir
+     --creds
+     --decryption-key
   "
 
      local all_options="$options_with_args $boolean_options"
@@ -554,10 +564,20 @@ return 1
      -h
      --quiet
      -q
+     --tls-verify
+     --remove-signatures
     "
 
      local options_with_args="
-     -chown
+     --chown
+     --chmod
+     --contextdir
+     --ignorefile
+     --from
+     --authfile
+     --cert-dir
+     --creds
+     --decryption-key
   "
 
      local all_options="$options_with_args $boolean_options"
@@ -613,6 +633,7 @@ return 1
      --cert-dir
      --creds
      --decryption-key
+     --policy
   "
 
      local all_options="$options_with_args $boolean_options"
@@ -626,12 +647,14 @@ return 1
 
  _buildah_push() {
      local boolean_options="
+          --all
           --help
           -h
           --disable-compression
           -D
           --quiet
           -q
+          --rm
           --tls-verify
           --remove-signatures
   "
@@ -741,6 +764,7 @@ return 1
         inspect
         push
         remove
+        rm
      "
      __buildah_subcommands "$subcommands" && return
 
@@ -862,7 +886,7 @@ return 1
      --digestfile
      --format
      -f
-     --purge
+     --rm
      --sign-by
   "
 
@@ -876,6 +900,24 @@ return 1
  }
 
  _buildah_manifest_remove() {
+     local boolean_options="
+     --help
+     -h
+  "
+
+     local options_with_args="
+  "
+
+     local all_options="$options_with_args $boolean_options"
+
+     case "$cur" in
+         -*)
+             COMPREPLY=($(compgen -W "$boolean_options $options_with_args" -- "$cur"))
+             ;;
+     esac
+ }
+
+ _buildah_manifest_rm() {
      local boolean_options="
      --help
      -h

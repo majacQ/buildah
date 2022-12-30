@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"github.com/containers/buildah"
-	"github.com/containers/buildah/imagebuildah"
+	"github.com/containers/buildah/define"
 	buildahcli "github.com/containers/buildah/pkg/cli"
 	"github.com/containers/buildah/pkg/parse"
 	"github.com/containers/buildah/util"
 	"github.com/containers/common/pkg/auth"
-	"github.com/containers/image/v5/storage"
+	"github.com/containers/image/v5/pkg/shortnames"
+	storageTransport "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
 	"github.com/pkg/errors"
@@ -27,6 +28,7 @@ type commitInputOptions struct {
 	disableCompression bool
 	format             string
 	iidfile            string
+	manifest           string
 	omitTimestamp      bool
 	timestamp          int64
 	quiet              bool
@@ -73,6 +75,7 @@ func init() {
 	flags.StringVar(&opts.creds, "creds", "", "use `[username[:password]]` for accessing the registry")
 	flags.BoolVarP(&opts.disableCompression, "disable-compression", "D", true, "don't compress layers")
 	flags.StringVarP(&opts.format, "format", "f", defaultFormat(), "`format` of the image manifest and metadata")
+	flags.StringVar(&opts.manifest, "manifest", "", "create image with as part of the specified manifest list. Creates manifest if it does not exist")
 	flags.StringVar(&opts.iidfile, "iidfile", "", "Write the image ID to the file")
 	flags.BoolVar(&opts.omitTimestamp, "omit-timestamp", false, "set created timestamp to epoch 0 to allow for deterministic builds")
 	flags.Int64Var(&opts.timestamp, "timestamp", 0, "set created timestamp to epoch seconds to allow for deterministic builds, defaults to current time")
@@ -122,9 +125,9 @@ func commitCmd(c *cobra.Command, args []string, iopts commitInputOptions) error 
 	if len(args) > 0 {
 		image = args[0]
 	}
-	compress := imagebuildah.Gzip
+	compress := define.Gzip
 	if iopts.disableCompression {
-		compress = imagebuildah.Uncompressed
+		compress = define.Uncompressed
 	}
 
 	format, err := getFormat(iopts.format)
@@ -148,16 +151,18 @@ func commitCmd(c *cobra.Command, args []string, iopts commitInputOptions) error 
 		return errors.Wrapf(err, "error building system context")
 	}
 
+	// If the user specified an image, we may need to massage it a bit if
+	// no transport is specified.
 	if image != "" {
 		if dest, err = alltransports.ParseImageName(image); err != nil {
-			candidates, _, _, err := util.ResolveName(image, "", systemContext, store)
+			candidates, err := shortnames.ResolveLocally(systemContext, image)
 			if err != nil {
-				return errors.Wrapf(err, "error parsing target image name %q", image)
+				return err
 			}
 			if len(candidates) == 0 {
 				return errors.Errorf("error parsing target image name %q", image)
 			}
-			dest2, err2 := storage.Transport.ParseStoreReference(store, candidates[0])
+			dest2, err2 := storageTransport.Transport.ParseStoreReference(store, candidates[0].String())
 			if err2 != nil {
 				return errors.Wrapf(err, "error parsing target image name %q", image)
 			}
@@ -166,7 +171,7 @@ func commitCmd(c *cobra.Command, args []string, iopts commitInputOptions) error 
 	}
 
 	// Add builder identity information.
-	builder.SetLabel(buildah.BuilderIdentityAnnotation, buildah.Version)
+	builder.SetLabel(buildah.BuilderIdentityAnnotation, define.Version)
 
 	encConfig, encLayers, err := getEncryptConfig(iopts.encryptionKeys, iopts.encryptLayers)
 	if err != nil {
@@ -175,6 +180,7 @@ func commitCmd(c *cobra.Command, args []string, iopts commitInputOptions) error 
 
 	options := buildah.CommitOptions{
 		PreferredManifestType: format,
+		Manifest:              iopts.manifest,
 		Compression:           compress,
 		SignaturePolicyPath:   iopts.signaturePolicy,
 		SystemContext:         systemContext,

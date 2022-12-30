@@ -46,6 +46,11 @@ load helpers
   cid1=$output
   run_buildah from --quiet --pull=false --signature-policy ${TESTSDIR}/policy.json busybox
   cid2=$output
+
+  run_buildah 125 images --noheading --filter since k8s.gcr.io/pause
+  expect_output 'invalid image filter "since": must be in the format "filter=value"'
+
+
   run_buildah images --noheading --filter since=k8s.gcr.io/pause
   expect_line_count 1
 }
@@ -143,7 +148,7 @@ load helpers
 
 @test "specify a nonexistent image" {
   run_buildah 125 images alpine
-  expect_output --from="${lines[0]}" "No such image alpine"
+  expect_output --from="${lines[0]}" "alpine: image not known"
   expect_line_count 1
 }
 

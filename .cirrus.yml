@@ -6,7 +6,11 @@ env:
     #### Global variables used for all tasks
     ####
     # Name of the ultimate destination branch for this CI run, PR or post-merge.
+  <<<<<<< release-1.17
     DEST_BRANCH: "release-1.17"
+  =======
+    DEST_BRANCH: "release-1.22"
+  >>>>>>> release-1.22
     GOPATH: "/var/tmp/go"
     GOSRC: "${GOPATH}/src/github.com/containers/buildah"
     # Overrides default location (/tmp/cirrus) for repo clone
@@ -19,25 +23,24 @@ env:
     CIRRUS_CLONE_DEPTH: 50
     # Unless set by in_podman.sh, default to operating outside of a podman container
     IN_PODMAN: 'false'
-    # Not cross-compiling by default
-    CROSS_TARGET: ""
 
     ####
     #### Cache-image names to test with
     ####
     # GCE project where images live
     IMAGE_PROJECT: "libpod-218412"
-    # See https://github.com/containers/podman/blob/master/contrib/cirrus/README.md#test_build_cache_images_task-task
-    FEDORA_NAME: "fedora-32"
-    PRIOR_FEDORA_NAME: "fedora-31"
-    UBUNTU_NAME: "ubuntu-20"
-    PRIOR_UBUNTU_NAME: "ubuntu-19"
+    FEDORA_NAME: "fedora-34"
+    PRIOR_FEDORA_NAME: "fedora-33"
+    UBUNTU_NAME: "ubuntu-2104"
+    PRIOR_UBUNTU_NAME: "ubuntu-2010"
 
-    _BUILT_IMAGE_SUFFIX: "podman-6530021898584064"
-    FEDORA_CACHE_IMAGE_NAME: "${FEDORA_NAME}-${_BUILT_IMAGE_SUFFIX}"
-    PRIOR_FEDORA_CACHE_IMAGE_NAME: "${PRIOR_FEDORA_NAME}-${_BUILT_IMAGE_SUFFIX}"
-    UBUNTU_CACHE_IMAGE_NAME: "${UBUNTU_NAME}-${_BUILT_IMAGE_SUFFIX}"
-    PRIOR_UBUNTU_CACHE_IMAGE_NAME: "${PRIOR_UBUNTU_NAME}-${_BUILT_IMAGE_SUFFIX}"
+    IMAGE_SUFFIX: "c6248193773010944"
+    FEDORA_CACHE_IMAGE_NAME: "fedora-${IMAGE_SUFFIX}"
+    PRIOR_FEDORA_CACHE_IMAGE_NAME: "prior-fedora-${IMAGE_SUFFIX}"
+    UBUNTU_CACHE_IMAGE_NAME: "ubuntu-${IMAGE_SUFFIX}"
+    PRIOR_UBUNTU_CACHE_IMAGE_NAME: "prior-ubuntu-${IMAGE_SUFFIX}"
+
+    IN_PODMAN_IMAGE: "quay.io/libpod/fedora_podman:${IMAGE_SUFFIX}"
 
     ####
     #### Command variables to help avoid duplication
@@ -62,10 +65,12 @@ gce_instance:
 
 
 # Update metadata on VM images referenced by this repository state
-'cirrus-ci/only_prs/meta_task':
+meta_task:
+    name: "VM img. keepalive"
+    alias: meta
 
     container:
-        image: "quay.io/libpod/imgts:latest"  # see contrib/imgts
+        image: "quay.io/libpod/imgts:latest"
         cpu: 1
         memory: 1
 
@@ -86,7 +91,10 @@ gce_instance:
     script: '/usr/local/bin/entrypoint.sh |& ${_TIMESTAMP}'
 
 
-'cirrus-ci/only_prs/gate_task':
+smoke_task:
+    alias: 'smoke'
+    name: "Smoke Test"
+
     gce_instance:
         memory: "12Gb"
 
@@ -94,7 +102,7 @@ gce_instance:
     # the git-validate tool which are difficult to debug and fix.
     skip: $CIRRUS_PR == ''
 
-    timeout_in: 10m
+    timeout_in: 30m
 
     setup_script: '${SCRIPT_BASE}/setup.sh |& ${_TIMESTAMP}'
     build_script: '${SCRIPT_BASE}/build.sh |& ${_TIMESTAMP}'
@@ -103,8 +111,16 @@ gce_instance:
     binary_artifacts:
         path: ./bin/*
 
+  <<<<<<< release-1.17
 
 'cirrus-ci/only_prs/vendor_task':
+  =======
+# Check that all included go modules from other sources match
+# # what is expected in `vendor/modules.txt` vs `go.mod`.
+vendor_task:
+    name: "Test Vendoring"
+    alias: vendor
+  >>>>>>> release-1.22
 
     env:
         CIRRUS_WORKING_DIR: "/var/tmp/go/src/github.com/containers/buildah"
@@ -113,7 +129,7 @@ gce_instance:
 
     # Runs within Cirrus's "community cluster"
     container:
-        image: docker.io/library/golang:1.13
+        image: docker.io/library/golang:1.16
         cpu: 1
         memory: 1
 
@@ -124,6 +140,7 @@ gce_instance:
         - './hack/tree_status.sh'
 
 
+  <<<<<<< release-1.17
 'cirrus-ci/success_task':
 
     depends_on:
@@ -141,5 +158,49 @@ gce_instance:
         cpu: 1
         memory: 1
 
+  =======
+conformance_task:
+    name: 'Build Conformance w/ $STORAGE_DRIVER'
+    alias: conformance
+    depends_on:
+      - vendor
+
+    gce_instance:
+        image_name: "${UBUNTU_CACHE_IMAGE_NAME}"
+
+    timeout_in: 25m
+
+    matrix:
+        - env:
+            STORAGE_DRIVER: 'vfs'
+        - env:
+            STORAGE_DRIVER: 'overlay'
+
+    setup_script: '${SCRIPT_BASE}/setup.sh conformance |& ${_TIMESTAMP}'
+    conformance_test_script: '${SCRIPT_BASE}/test.sh conformance |& ${_TIMESTAMP}'
+
+
+# Status aggregator for all tests.  This task simply ensures a defined
+# set of tasks all passed, and allows confirming that based on the status
+# of this task.
+success_task:
+    name: "Total Success"
+    alias: success
+
+    depends_on:
+      - meta
+      - smoke
+      - vendor
+      - conformance
+
+    container:
+        image: "quay.io/libpod/alpine:latest"
+        cpu: 1
+        memory: 1
+
+    env:
+        CIRRUS_SHELL: direct  # execute command directly
+
+  >>>>>>> release-1.22
     clone_script: mkdir -p $CIRRUS_WORKING_DIR
     script: /bin/true

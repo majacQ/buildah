@@ -1,2 +1,6 @@
 FROM scratch
+  <<<<<<< release-1.17
 ADD --chown=2:2 https://raw.githubusercontent.com/containers/buildah/master/LICENSE /
+  =======
+ADD --chown=2:2 https://raw.githubusercontent.com/containers/buildah/main/LICENSE /
+  >>>>>>> release-1.22
