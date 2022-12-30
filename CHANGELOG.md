@@ -2,6 +2,17 @@
 
 # Changelog
 
+  <<<<<<< release-v1.14
+## v1.14.11 (2020-08-10)
+    Make imagebuildah.BuildOptions.Architecture/OS optional
+    blobcache: avoid an unnecessary NewImage()
+
+## v1.14.10 (2020-06-18)
+    imagebuildah: stages shouldn't count as their base images
+
+## v1.14.9 (2020-05-11)
+    Bump github.com/containers/common to 0.8.4
+  =======
 ## v1.16.8 (2021-06-21)
     Move away from using docker.io
     Turn off PRIOR_UBUNTU Test until vm is updated
@@ -219,6 +230,7 @@
     Bump github.com/containers/common from 0.8.1 to 0.9.0
     Bump back to v1.15.0-dev
     Remove warning for systemd inside of container
+  >>>>>>> release-1.16
 
 ## v1.14.8 (2020-04-09)
     Run (make vendor)

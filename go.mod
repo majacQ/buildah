@@ -4,10 +4,17 @@ go 1.12
 
 require (
 	github.com/containernetworking/cni v0.7.2-0.20190904153231-83439463f784
+  <<<<<<< release-v1.14
+	github.com/containers/common v0.8.4
+	github.com/containers/image/v5 v5.4.3
+	github.com/containers/storage v1.18.2
+	github.com/cyphar/filepath-securejoin v0.2.2
+  =======
 	github.com/containers/common v0.22.0
 	github.com/containers/image/v5 v5.6.0
 	github.com/containers/ocicrypt v1.0.3
 	github.com/containers/storage v1.23.5
+  >>>>>>> release-1.16
 	github.com/docker/distribution v2.7.1+incompatible
 	github.com/docker/go-units v0.4.0
 	github.com/docker/libnetwork v0.8.0-dev.2.0.20190625141545-5a177b73e316

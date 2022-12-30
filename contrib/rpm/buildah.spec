@@ -26,7 +26,11 @@
 
 Name:           buildah
 # Bump version in buildah.go too
+  <<<<<<< release-v1.14
+Version:        1.14.11
+  =======
 Version:        1.16.8
+  >>>>>>> release-1.16
 Release:        1.git%{shortcommit}%{?dist}
 Summary:        A command line tool used to creating OCI Images
 License:        ASL 2.0
@@ -99,6 +103,17 @@ make DESTDIR=%{buildroot} PREFIX=%{_prefix} install install.completions
 %{_datadir}/bash-completion/completions/*
 
 %changelog
+  <<<<<<< release-v1.14
+* Mon Aug 10, 2020 Tom Sweeney <tsweeney@redhat.com> 1.14.11-1
+- Make imagebuildah.BuildOptions.Architecture/OS optional
+- blobcache: avoid an unnecessary NewImage()
+
+* Thu Jun 18, 2020 Tom Sweeney <tsweeney@redhat.com> 1.14.10-1
+- imagebuildah: stages shouldn't count as their base images 
+
+* Mon May 11, 2020 Dan Walsh <dwalsh@redhat.com> 1.14.9-1
+- Bump github.com/containers/common to 0.8.4
+  =======
 * Mon Jun 21 2021 Nalin Dahyabhai <nalin@redhat.com> 1.16.8-1
 - Move away from using docker.io
 - Turn off PRIOR_UBUNTU Test until vm is updated
@@ -316,6 +331,7 @@ make DESTDIR=%{buildroot} PREFIX=%{_prefix} install install.completions
 - Bump github.com/containers/common from 0.8.1 to 0.9.0
 - Bump back to v1.15.0-dev
 - Remove warning for systemd inside of container
+  >>>>>>> release-1.16
 
 * Thu Apr 9, 2020 Tom Sweeney <tsweeney@redhat.com> 1.14.8-1
 - Run (make vendor)

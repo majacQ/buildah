@@ -262,7 +262,14 @@ func NewExecutor(store storage.Store, options BuildOptions, mainNode *parser.Nod
 
 // startStage creates a new stage executor that will be referenced whenever a
 // COPY or ADD statement uses a --from=NAME flag.
+  <<<<<<< release-v1.14
+func (b *Executor) startStage(stage *imagebuilder.Stage, stages int, output string) *StageExecutor {
+	if b.stages == nil {
+		b.stages = make(map[string]*StageExecutor)
+	}
+  =======
 func (b *Executor) startStage(ctx context.Context, stage *imagebuilder.Stage, stages imagebuilder.Stages, output string) *StageExecutor {
+  >>>>>>> release-1.16
 	stageExec := &StageExecutor{
 		ctx:             ctx,
 		executor:        b,
@@ -540,7 +547,11 @@ func (b *Executor) Build(ctx context.Context, stages imagebuilder.Stages) (image
 		jobs = int64(len(stages))
 	}
 
+  <<<<<<< release-v1.14
+		stageExecutor := b.startStage(&stage, len(stages), output)
+  =======
 	b.stagesSemaphore = semaphore.NewWeighted(jobs)
+  >>>>>>> release-1.16
 
 	var wg sync.WaitGroup
 	wg.Add(len(stages))

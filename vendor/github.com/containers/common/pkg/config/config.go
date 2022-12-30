@@ -479,10 +479,18 @@ func NewConfig(userConfigPath string) (*Config, error) {
 // the defaults from the config parameter will be used for all other fields.
 func readConfigFromFile(path string, config *Config) error {
 	logrus.Debugf("Reading configuration file %q", path)
+  <<<<<<< release-v1.14
+	_, err := toml.DecodeFile(path, config)
+	if err != nil {
+		return nil, fmt.Errorf("unable to decode configuration %v: %v", path, err)
+	}
+	return config, err
+  =======
 	if _, err := toml.DecodeFile(path, config); err != nil {
 		return errors.Wrapf(err, "unable to decode configuration %v", path)
 	}
 	return nil
+  >>>>>>> release-1.16
 }
 
 // Returns the list of configuration files, if they exist in order of hierarchy.

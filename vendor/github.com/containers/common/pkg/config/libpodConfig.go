@@ -229,7 +229,11 @@ func newLibpodConfig(c *Config) error {
 
 	// hard code EventsLogger to "file" to match older podman versions.
 	if config.EventsLogger != "file" {
+  <<<<<<< release-v1.14
+		logrus.Debugf("Ignoring lipod.conf EventsLogger setting %q. Use containers.conf if you want to change this setting and remove libpod.conf files.", config.EventsLogger)
+  =======
 		logrus.Warnf("Ignoring libpod.conf EventsLogger setting %q. Use %q if you want to change this setting and remove libpod.conf files.", config.EventsLogger, Path())
+  >>>>>>> release-1.16
 		config.EventsLogger = "file"
 	}
 

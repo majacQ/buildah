@@ -105,7 +105,10 @@ gce_instance:
     binary_artifacts:
         path: ./bin/*
 
+  <<<<<<< release-v1.14
+  =======
 
+  >>>>>>> release-1.16
 # This task runs `make vendor` followed by ./hack/tree_status.sh to check
 # whether the git tree is clean.  The reasoning for that is to make sure
 # that the vendor.conf, the code and the vendored packages in ./vendor are
@@ -144,7 +147,10 @@ gce_instance:
         - 'cirrus-ci/only_prs/vendor'
 
     env:
+  <<<<<<< release-v1.14
+  =======
         CIRRUS_SHELL: direct  # execute command directly
+  >>>>>>> release-1.16
         CIRRUS_WORKING_DIR: /tmp
         CIRRUS_CLONE_DEPTH: 1  # no code is being used by this task
 

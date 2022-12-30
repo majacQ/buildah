@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+  <<<<<<< release-v1.14
+  =======
 	"runtime"
 	"runtime/pprof"
 	"strings"
+  >>>>>>> release-1.16
 	"syscall"
 
 	"github.com/containers/buildah"
@@ -222,9 +225,12 @@ func main() {
 				exitCode = w.ExitStatus()
 			}
 		}
+  <<<<<<< release-v1.14
+  =======
 		if err := shutdownStore(rootCmd); err != nil {
 			logrus.Warnf("failed to shutdown storage: %q", err)
 		}
+  >>>>>>> release-1.16
 		os.Exit(exitCode)
 	}
 }

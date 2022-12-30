@@ -165,6 +165,11 @@ func DefaultConfig() (*Config, error) {
 		cgroupNS = "private"
 	}
 
+	cgroupNS := "host"
+	if cgroup2, _ := cgroupv2.Enabled(); cgroup2 {
+		cgroupNS = "private"
+	}
+
 	return &Config{
 		Containers: ContainersConfig{
 			Devices:             []string{},
@@ -172,7 +177,10 @@ func DefaultConfig() (*Config, error) {
 			Annotations:         []string{},
 			ApparmorProfile:     DefaultApparmorProfile,
 			CgroupNS:            cgroupNS,
+  <<<<<<< release-v1.14
+  =======
 			Cgroups:             "enabled",
+  >>>>>>> release-1.16
 			DefaultCapabilities: DefaultCapabilities,
 			DefaultSysctls:      []string{},
 			DefaultUlimits:      getDefaultProcessLimits(),

@@ -258,6 +258,131 @@ func (s *StageExecutor) volumeCacheRestore() error {
 	return nil
 }
 
+  <<<<<<< release-v1.14
+// digestSpecifiedContent digests any content that this next instruction would add to
+// the image, returning the digester if there is any, or nil otherwise.  We
+// don't care about the details of where in the filesystem the content actually
+// goes, because we're not actually going to add it here, so this is less
+// involved than Copy().
+func (s *StageExecutor) digestSpecifiedContent(node *parser.Node, argValues []string, envValues []string) (string, error) {
+	// No instruction: done.
+	if node == nil {
+		return "", nil
+	}
+
+	// Not adding content: done.
+	switch strings.ToUpper(node.Value) {
+	default:
+		return "", nil
+	case "ADD", "COPY":
+	}
+
+	// Pull out everything except the first node (the instruction) and the
+	// last node (the destination).
+	var srcs []string
+	destination := node
+	for destination.Next != nil {
+		destination = destination.Next
+		if destination.Next != nil {
+			srcs = append(srcs, destination.Value)
+		}
+	}
+
+	var sources []string
+	var idMappingOptions *buildah.IDMappingOptions
+	contextDir := s.executor.contextDir
+	for _, flag := range node.Flags {
+		if strings.HasPrefix(flag, "--from=") {
+			// Flag says to read the content from another
+			// container.  Update the ID mappings and
+			// all-content-comes-from-below-this-directory value.
+			from := strings.TrimPrefix(flag, "--from=")
+			if other, ok := s.executor.stages[from]; ok && other.index < s.index {
+				contextDir = other.mountPoint
+				idMappingOptions = &other.builder.IDMappingOptions
+			} else if builder, ok := s.executor.containerMap[from]; ok {
+				contextDir = builder.MountPoint
+				idMappingOptions = &builder.IDMappingOptions
+			} else {
+				return "", errors.Errorf("the stage %q has not been built", from)
+			}
+		}
+	}
+
+	varValues := append(argValues, envValues...)
+	for _, src := range srcs {
+		// If src has an argument within it, resolve it to its
+		// value.  Otherwise just return the value found.
+		name, err := imagebuilder.ProcessWord(src, varValues)
+		if err != nil {
+			return "", errors.Wrapf(err, "unable to resolve source %q", src)
+		}
+		src = name
+		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+			// Source is a URL.  TODO: cache this content
+			// somewhere, so that we can avoid pulling it down
+			// again if we end up needing to drop it into the
+			// filesystem.
+			sources = append(sources, src)
+		} else {
+			// Source is not a URL, so it's a location relative to
+			// the all-content-comes-from-below-this-directory
+			// directory.  Also raise an error if the src escapes
+			// the context directory.
+			contextSrc, err := securejoin.SecureJoin(contextDir, src)
+			if err == nil && strings.HasPrefix(src, "../") {
+				err = errors.New("escaping context directory error")
+			}
+			if err != nil {
+				return "", errors.Wrapf(err, "forbidden path for %q, it is outside of the build context %q", src, contextDir)
+			}
+			sources = append(sources, contextSrc)
+		}
+	}
+	// If the all-content-comes-from-below-this-directory is the build
+	// context, read its .dockerignore.
+	var excludes []string
+	if contextDir == s.executor.contextDir {
+		var err error
+		if excludes, err = imagebuilder.ParseDockerignore(contextDir); err != nil {
+			return "", errors.Wrapf(err, "error parsing .dockerignore in %s", contextDir)
+		}
+	}
+	// Restart the digester and have it do a dry-run copy to compute the
+	// digest information.
+	options := buildah.AddAndCopyOptions{
+		Excludes:         excludes,
+		ContextDir:       contextDir,
+		IDMappingOptions: idMappingOptions,
+		DryRun:           true,
+	}
+	s.builder.ContentDigester.Restart()
+	download := strings.ToUpper(node.Value) == "ADD"
+
+	// If destination.Value has an argument within it, resolve it to its
+	// value.  Otherwise just return the value found.
+	destValue, destErr := imagebuilder.ProcessWord(destination.Value, varValues)
+	if destErr != nil {
+		return "", errors.Wrapf(destErr, "unable to resolve destination %q", destination.Value)
+	}
+	err := s.builder.Add(destValue, download, options, sources...)
+	if err != nil {
+		return "", errors.Wrapf(err, "error dry-running %q", node.Original)
+	}
+	// Return the formatted version of the digester's result.
+	contentDigest := ""
+	prefix, digest := s.builder.ContentDigester.Digest()
+	if prefix != "" {
+		prefix += ":"
+	}
+	if digest.Validate() == nil {
+		contentDigest = prefix + digest.Encoded()
+	}
+	return contentDigest, nil
+}
+
+  =======
+  >>>>>>> release-1.16
 // Copy copies data into the working tree.  The "Download" field is how
 // imagebuilder tells us the instruction was "ADD" and not "COPY".
 func (s *StageExecutor) Copy(excludes []string, copies ...imagebuilder.Copy) error {
@@ -736,6 +861,12 @@ func (s *StageExecutor) Execute(ctx context.Context, base string) (imgID string,
 				if len(arr) != 2 {
 					return "", nil, errors.Errorf("%s: invalid --from flag, should be --from=<name|stage>", command)
 				}
+  <<<<<<< release-v1.14
+				if otherStage, ok := s.executor.stages[arr[1]]; ok && otherStage.index < s.index {
+					mountPoint = otherStage.mountPoint
+				} else if mountPoint, err = s.getImageRootfs(ctx, arr[1]); err != nil {
+					return "", nil, errors.Errorf("%s --from=%s: no stage or image found with that name", command, arr[1])
+  =======
 				// If arr[1] has an argument within it, resolve it to its
 				// value.  Otherwise just return the value found.
 				from, fromErr := imagebuilder.ProcessWord(arr[1], s.stage.Builder.Arguments())
@@ -752,6 +883,7 @@ func (s *StageExecutor) Execute(ctx context.Context, base string) (imgID string,
 					break
 				} else if _, err = s.getImageRootfs(ctx, from); err != nil {
 					return "", nil, errors.Errorf("%s --from=%s: no stage or image found with that name", command, from)
+  >>>>>>> release-1.16
 				}
 				break
 			}

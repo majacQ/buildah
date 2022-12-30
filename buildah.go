@@ -28,7 +28,11 @@ const (
 	Package = "buildah"
 	// Version for the Package.  Bump version in contrib/rpm/buildah.spec
 	// too.
+  <<<<<<< release-v1.14
+	Version = "1.14.11"
+  =======
 	Version = "1.16.8"
+ >>>>>>> release-1.16
 	// The value we use to identify what type of information, currently a
 	// serialized Builder structure, we are using as per-container state.
 	// This should only be changed when we make incompatible changes to
