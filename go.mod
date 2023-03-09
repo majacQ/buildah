@@ -3,7 +3,7 @@ module github.com/containers/buildah
 go 1.17
 
 require (
-	github.com/containerd/containerd v1.6.14
+	github.com/containerd/containerd v1.6.18
 	github.com/containernetworking/cni v1.1.2
 	github.com/containers/common v0.50.2-0.20221209085636-567290d3d3b3
 	github.com/containers/image/v5 v5.23.1-0.20221209092225-431fd251c4c5
@@ -11,9 +11,9 @@ require (
 	github.com/containers/storage v1.44.1-0.20221209075713-e546955f90ea
 	github.com/cyphar/filepath-securejoin v0.2.3
 	github.com/docker/distribution v2.8.1+incompatible
-	github.com/docker/docker v20.10.22+incompatible
+	github.com/docker/docker v23.0.1+incompatible
 	github.com/docker/go-units v0.5.0
-	github.com/fsouza/go-dockerclient v1.9.1
+	github.com/fsouza/go-dockerclient v1.9.6
 	github.com/ghodss/yaml v1.0.0
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/mattn/go-shellwords v1.0.12
@@ -35,8 +35,8 @@ require (
 	go.etcd.io/bbolt v1.3.6
 	golang.org/x/crypto v0.4.0
 	golang.org/x/sync v0.1.0
-	golang.org/x/sys v0.3.0
-	golang.org/x/term v0.3.0
+	golang.org/x/sys v0.6.0
+	golang.org/x/term v0.6.0
 )
 
 require (
@@ -78,8 +78,9 @@ require (
 	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/miekg/pkcs11 v1.1.1 // indirect
 	github.com/mistifyio/go-zfs/v3 v3.0.0 // indirect
-	github.com/moby/sys/mount v0.3.3 // indirect
+	github.com/moby/patternmatcher v0.5.0 // indirect
 	github.com/moby/sys/mountinfo v0.6.2 // indirect
+	github.com/moby/sys/sequential v0.5.0 // indirect
 	github.com/moby/term v0.0.0-20210619224110-3f7ff695adc6 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
